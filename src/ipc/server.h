@@ -296,10 +296,11 @@ private:
 
         if (err != 0) {
           pfsd_error("Mount error: %d", err);
+          host_id_ = -1;
+        } else {
+          pbdname_ = message.pbdname;
+          host_id_ = message.host_id;
         }
-
-        pbdname_ = message.pbdname;
-        host_id_ = message.host_id;
 
         ServerHelloMessage reply;
         reply.connectionId = clientId_;
@@ -317,7 +318,9 @@ private:
     pfsd_info("Client disconnected");
     socket_->close();
     server_->cleanupClient(clientId_);
-    pfs_mount_release(pbdname_.c_str(), host_id_);
+    if (host_id_ >= 0) {
+      pfs_mount_release(pbdname_.c_str(), host_id_);
+    }
   }
 
   void readErr(const folly::AsyncSocketException &ex) noexcept override {
