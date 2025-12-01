@@ -128,8 +128,9 @@ char *pfsd_getcwd(char *buf, size_t size);
 
 int pfsd_access(const char *pbdpath, int amode);
 
-/* mock */
 int pfsd_fsync(int fd);
+
+/* mock */
 ssize_t pfsd_readlink(const char *pbdpath, char *buf, size_t bufsize);
 int pfsd_chmod(const char *pbdpath, mode_t mode);
 int pfsd_fchmod(int fd, mode_t mode);

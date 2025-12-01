@@ -94,8 +94,9 @@ char	*pfs_getcwd(char *buf, size_t size);
 
 int	pfs_access(const char *pbdpath, int amode);
 
-/* mock */
 int	pfs_fsync(int fd);
+
+/* mock */
 ssize_t pfs_readlink(const char *pbdpath, char *buf, size_t bufsize);
 int	pfs_chmod(const char *pbdpath, mode_t mode);
 int	pfs_fchmod(int fd, mode_t mode);
