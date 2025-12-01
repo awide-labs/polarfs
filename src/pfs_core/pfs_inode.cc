@@ -1336,6 +1336,7 @@ pfs_inode_create(pfs_mount_t *mnt, pfs_ino_t ino)
 		in->in_btime = 0;
 		in->in_mnt = mnt;
 		in->in_refcnt = 0;
+		in->in_shard_id = fnv_32_buf(&ino, sizeof(ino), 0) & (mnt->mnt_num_shards - 1);
 		in->in_nblk_ip = 0;
 		in->in_nblk_modify = 0;
 		in->in_cbdone = true;

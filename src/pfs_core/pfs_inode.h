@@ -116,10 +116,8 @@ typedef struct pfs_inode {
 
 	pfs_inode_phy_t	*in_phyin;
 
-//	bool		in_doom;	/* unlink barrier, whether is being unlinked */
-//					/* protected by mount inode list lock */
-	int32_t		in_refcnt;	/* XXX: opened file count */
-					/* protected by mount inode list lock */
+	int32_t		in_refcnt;
+	int		in_shard_id;
 	bool		in_stale;
 	bool		in_cbdone;
 	int64_t		in_nblk_ip;	/* (I) number of block in progress */

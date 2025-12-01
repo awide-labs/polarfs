@@ -198,8 +198,18 @@ mountentry_hasname(const mountentry_t *me, const void *data)
 	return mnt && pfs_mount_hasname(mnt, (const char *)data);
 }
 
-#define	INODE_LIST_LOCK(mnt)	mutex_lock(&(mnt)->mnt_inodetree_mtx)
-#define	INODE_LIST_UNLOCK(mnt)	mutex_unlock(&(mnt)->mnt_inodetree_mtx)
+#define	INODE_TREE_RDLOCK(mnt)	mnt->mnt_inodetree_rwlock->lock_shared()
+#define	INODE_TREE_WRLOCK(mnt)	mnt->mnt_inodetree_rwlock->lock()
+#define	INODE_TREE_RDUNLOCK(mnt)	mnt->mnt_inodetree_rwlock->unlock_shared()
+#define	INODE_TREE_WRUNLOCK(mnt)	mnt->mnt_inodetree_rwlock->unlock()
+
+static inline void inodelist_lock(pfs_mount_t *mnt, pfs_inode_t *in) {
+	mutex_lock(&mnt->mnt_inodelist[in->in_shard_id].mtx);
+}
+
+static inline void inodelist_unlock(pfs_mount_t *mnt, pfs_inode_t *in) {
+	mutex_unlock(&mnt->mnt_inodelist[in->in_shard_id].mtx);
+}
 
 static void 	pfs_wait_inited(pfs_mount_t *mnt);
 static void 	pfs_notify_inited(pfs_mount_t *mnt);
@@ -450,6 +460,8 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 	struct pbdinfo pi;
 	bool require_safe;
 	int devflags;
+	int cpu_count;
+	uint64_t cpu_shift;
 
 	mnt = (pfs_mount_t *)pfs_mem_malloc(sizeof(*mnt), M_MOUNT);
 	if (mnt == NULL)
@@ -464,7 +476,6 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 	mnt->mnt_admin = NULL;
 	pfs_avl_create(&mnt->mnt_inodetree, pfs_inode_compare,
 	    offsetof(pfs_inode_t, in_node));
-	TAILQ_INIT(&mnt->mnt_inodelist);
 	mnt->mnt_host_id = host_id;
 	mnt->mnt_host_generation = 0;
 	mnt->mnt_num_hosts = 0;
@@ -487,7 +498,21 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 	mnt->mnt_stat_tid = 0;
 	mnt->mnt_stat_stop = false;
 	rwlock_init(&mnt->mnt_meta_rwlock, NULL);
-	mutex_init(&mnt->mnt_inodetree_mtx);
+	mnt->mnt_inodetree_rwlock = new DCLCRWLock;
+	mnt->mnt_inodetree_rwlock->init();
+	cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+	if (cpu_count == 0)
+		cpu_count = 64;
+	cpu_shift = 64 - __builtin_clzl(cpu_count - 1);
+	mnt->mnt_num_shards = 1 << cpu_shift;
+	mnt->mnt_inodelist = (pfs_mount_t::mnt_inodelist_t *)
+	pfs_mem_malloc(sizeof(pfs_mount_t::mnt_inodelist_t) * mnt->mnt_num_shards, M_MOUNT);
+	if (mnt->mnt_inodelist == NULL)
+		ERR_GOTO(ENOMEM, out);
+	for (int i = 0; i < mnt->mnt_num_shards; i++) {
+		mutex_init(&mnt->mnt_inodelist[i].mtx);
+		TAILQ_INIT(&mnt->mnt_inodelist[i].list);
+	}
 	mutex_init(&mnt->mnt_inited_mtx);
 	cond_init(&mnt->mnt_inited_cond, NULL);
 	mutex_init(&mnt->mnt_poll_mtx);
@@ -544,6 +569,13 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 
 out:
 	if (mnt) {
+		if (mnt->mnt_inodelist) {
+			for (int i = 0; i < mnt->mnt_num_shards; i++) {
+				mutex_destroy(&mnt->mnt_inodelist[i].mtx);
+			}
+			pfs_mem_free(mnt->mnt_inodelist, M_MOUNT);
+			mnt->mnt_inodelist = NULL;
+		}
 		pfs_mem_free(mnt, M_MOUNT);
 		mnt = NULL;
 	}
@@ -613,7 +645,12 @@ pfs_destroy_mount(pfs_mount_t *mnt)
 
 	// destory pfs read/write lock
 	rwlock_destroy(&mnt->mnt_meta_rwlock);
-	mutex_destroy(&mnt->mnt_inodetree_mtx);
+	mnt->mnt_inodetree_rwlock->destroy();
+	delete mnt->mnt_inodetree_rwlock;
+	for (int i = 0; i < mnt->mnt_num_shards; i++) {
+		mutex_destroy(&mnt->mnt_inodelist[i].mtx);
+	}
+	pfs_mem_free(mnt->mnt_inodelist, M_MOUNT);
 	mutex_destroy(&mnt->mnt_inited_mtx);
 	cond_destroy(&mnt->mnt_inited_cond);
 	mutex_destroy(&mnt->mnt_poll_mtx);
@@ -965,19 +1002,18 @@ pfs_get_inode(pfs_mount_t *mnt, pfs_ino_t ino)
 	pfs_inode_t fin, *in;
 	MNT_STAT_BEGIN();
 	fin.in_ino = ino;
-	INODE_LIST_LOCK(mnt);
+	INODE_TREE_RDLOCK(mnt);
 	in = (pfs_inode_t *)pfs_avl_find(&mnt->mnt_inodetree, &fin, NULL);
 	if (in != NULL) {
+		inodelist_lock(mnt, in);
 		++in->in_refcnt;
 		if (in->in_refcnt == 1) {
-			//Move "in" to tail so that do not disturb "head" swap
-			//out.
-			TAILQ_REMOVE(&mnt->mnt_inodelist, in, in_next);
-			TAILQ_INSERT_TAIL(&mnt->mnt_inodelist, in, in_next);
+			TAILQ_REMOVE(&mnt->mnt_inodelist[in->in_shard_id].list, in, in_next);
+			TAILQ_INSERT_TAIL(&mnt->mnt_inodelist[in->in_shard_id].list, in, in_next);
 		}
+		inodelist_unlock(mnt, in);
 	}
-
-	INODE_LIST_UNLOCK(mnt);
+	INODE_TREE_RDUNLOCK(mnt);
 	MNT_STAT_END(MNT_STAT_CONTAINER_INODE_GET);
 	return in;
 }
@@ -985,35 +1021,43 @@ pfs_get_inode(pfs_mount_t *mnt, pfs_ino_t ino)
 void
 pfs_put_inode(pfs_mount_t *mnt, pfs_inode_t *in)
 {
-	bool need_free = false;
 	PFS_ASSERT(in != NULL);
 	MNT_STAT_BEGIN();
-	INODE_LIST_LOCK(mnt);
-	--in->in_refcnt;
-	if ((int)pfs_avl_numnodes(&mnt->mnt_inodetree) <=
-	    inodetree_lru_size) {
-		if (in->in_refcnt == 0) {
-			//make in easier to be swap out.
-			TAILQ_REMOVE(&mnt->mnt_inodelist, in, in_next);
-			TAILQ_INSERT_HEAD(&mnt->mnt_inodelist, in, in_next);
-		}
-	} else {
-		if (in->in_refcnt != 0) {
-			//choose a candidate to be swap out.
-			in = TAILQ_FIRST(&mnt->mnt_inodelist);
-			if (in->in_refcnt != 0)
-				in = NULL;
-		}
 
-		if (in != NULL) {
-			pfs_avl_remove(&mnt->mnt_inodetree, in);
-			TAILQ_REMOVE(&mnt->mnt_inodelist, in, in_next);
-			need_free = true;
-		}
+	INODE_TREE_RDLOCK(mnt);
+
+	inodelist_lock(mnt, in);
+	--in->in_refcnt;
+	if (in->in_refcnt == 0) {
+		TAILQ_REMOVE(&mnt->mnt_inodelist[in->in_shard_id].list, in, in_next);
+		TAILQ_INSERT_HEAD(&mnt->mnt_inodelist[in->in_shard_id].list, in, in_next);
 	}
-	INODE_LIST_UNLOCK(mnt);
-	if (need_free)
-		pfs_inode_destroy(in);
+	inodelist_unlock(mnt, in);
+
+	int numnodes = (int)pfs_avl_numnodes(&mnt->mnt_inodetree);
+	INODE_TREE_RDUNLOCK(mnt);
+
+	if (numnodes > inodetree_lru_size) {
+		INODE_TREE_WRLOCK(mnt);
+		for (int i = 0; i < mnt->mnt_num_shards; i++) {
+			mutex_lock(&mnt->mnt_inodelist[i].mtx);
+			auto in2 = TAILQ_FIRST(&mnt->mnt_inodelist[i].list);
+			if (in2) {
+				bool need_free = false;
+				if (in->in_refcnt == 0) {
+					pfs_avl_remove(&mnt->mnt_inodetree, in2);
+					TAILQ_REMOVE(&mnt->mnt_inodelist[i].list, in2, in_next);
+					need_free = true;
+				}
+				if (need_free) {
+					pfs_inode_destroy(in2);
+				}
+			}
+			mutex_unlock(&mnt->mnt_inodelist[i].mtx);
+		}
+		INODE_TREE_WRUNLOCK(mnt);
+	}
+
 	MNT_STAT_END(MNT_STAT_CONTAINER_INODE_PUT);
 }
 
@@ -1022,15 +1066,16 @@ pfs_add_inode(pfs_mount_t *mnt, pfs_inode_t *in)
 {
 	pfs_inode_t *in2;
 
-	INODE_LIST_LOCK(mnt);
+	INODE_TREE_WRLOCK(mnt);
 	in2 = (pfs_inode_t *)pfs_avl_find(&mnt->mnt_inodetree, in, NULL);
 	if (in2 == NULL) {
 		pfs_avl_add(&mnt->mnt_inodetree, in);
-		//make in hard to be swap out.
-		TAILQ_INSERT_TAIL(&mnt->mnt_inodelist, in, in_next);
+		mutex_lock(&mnt->mnt_inodelist[in->in_shard_id].mtx);
+		TAILQ_INSERT_TAIL(&mnt->mnt_inodelist[in->in_shard_id].list, in, in_next);
+		mutex_unlock(&mnt->mnt_inodelist[in->in_shard_id].mtx);
 		in2 = in;
 	}
-	INODE_LIST_UNLOCK(mnt);
+	INODE_TREE_WRUNLOCK(mnt);
 
 	return in2;
 }

@@ -19,6 +19,7 @@
 #include <sys/queue.h>
 #include <pthread.h>
 
+#include "lib/dclcrwlock.h"
 #include "pfs_meta.h"
 #include "pfs_alloc.h"
 #include "pfs_log.h"
@@ -66,8 +67,14 @@ typedef struct pfs_mount {
 	int		mnt_id;
 	int64_t		mnt_epoch;
 
-	pthread_mutex_t	mnt_inodetree_mtx;
-	TAILQ_HEAD(, pfs_inode) mnt_inodelist;	/* destack helper for swap out*/
+	DCLCRWLock	*mnt_inodetree_rwlock;
+	int	mnt_num_shards;
+	struct mnt_inodelist_t {
+		pthread_mutex_t mtx;
+		TAILQ_HEAD(, pfs_inode) list;
+		char pad1[64 - sizeof(mtx) - sizeof(list)];
+	};
+	mnt_inodelist_t	*mnt_inodelist;
 	pfs_avl_tree_t	mnt_inodetree;		/* (I) */
 
 	int		mnt_flags;		/* flags set by user, whether
