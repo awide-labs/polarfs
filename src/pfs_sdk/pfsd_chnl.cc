@@ -272,22 +272,6 @@ pfsd_chnl_send_recv(int32_t connect_id, void *req_buffer, int64_t req_len,
 	return iresult;
 }
 
-/* server side */
-int
-pfsd_chnl_get_logic_id(int32_t connect_id)
-{
-	pfsd_connect_entry_t *result = pfsd_connect_get_entry(connect_id);
-	if (result == NULL) {
-		errno = EINVAL;
-		return -1;
-	}
-
-	int id = result->connect_mntid;
-	pfsd_connect_put_entry(connect_id);
-
-	return id;
-}
-
 /* client side */
 void
 pfsd_chnl_update_meta(int32_t connect_id, long meta)
@@ -314,118 +298,6 @@ pfsd_chnl_abort(int32_t connect_id, pid_t pid)
 	iresult = result->connect_op->chnl_abort(result->connect_data, pid);
 	pfsd_connect_put_entry(connect_id);
 	return iresult;
-}
-
-/* server side */
-int
-pfsd_chnl_listen(const char *svr_addr, const char *pbdname, int nworkers,
-    void *arg1, void *arg2)
-{
-	/* chnl_ctx_shm_t type for SHM, used by listen thread */
-	void *ctx = NULL;
-	int32_t result = -1;
-	pfsd_chnl_op *opt = NULL;
-
-	if (!svr_addr || !pbdname || nworkers <= 0) {
-		fprintf(stderr,
-		    "wrong args svr_addr(%p) pbdname(%p) nworkers(%d)\n",
-		    svr_addr, pbdname, nworkers);
-
-		errno = EINVAL;
-		return -1;
-	}
-
-	char full_svr_addr[PFSD_MAX_SVR_ADDR_SIZE] = "";
-	snprintf(full_svr_addr, PFSD_MAX_SVR_ADDR_SIZE, "%s/%s", svr_addr,
-	    pbdname);
-	svr_addr = full_svr_addr;
-	if (mkdir(svr_addr, 0777) != 0 && errno != EEXIST) {
-		fprintf(stderr, "mkdir %s failed %s\n", svr_addr,
-		    strerror(errno));
-		return -1;
-	}
-	chmod(svr_addr, 0777);
-
-	pfsd_chnl_ctx_create(svr_addr, &ctx, &opt, true);
-	if (opt == NULL) {
-		errno = EPROTONOSUPPORT;
-		return result;
-	}
-
-	result = opt->chnl_prepare(pbdname, nworkers, arg2);
-	if (result != 0) {
-		fprintf(stderr, "chnl_prepare failed %s\n", strerror(errno));
-		opt->chnl_ctx_destroy(ctx);
-		return result;
-	}
-
-	result = opt->chnl_listen(ctx, opt, svr_addr, arg1, arg2);
-	if (result < 0) {
-		fprintf(stderr, "chnl_listen failed %s\n", strerror(errno));
-		opt->chnl_ctx_destroy(ctx);
-		return result;
-	}
-
-	result = opt->chnl_recover(ctx, opt, svr_addr, nworkers, NULL);
-	if (result != 0) {
-		fprintf(stderr, "chnl_recover failed %s\n", strerror(errno));
-		opt->chnl_ctx_destroy(ctx);
-		return result;
-	}
-
-	return result;
-}
-
-int32_t
-pfsd_chnl_accept_begin(void *ctx, void *op, int32_t conn_id_hint)
-{
-	pfsd_connect_entry_t *ptr = NULL;
-	int32_t conn_id = -1;
-	assert(pfsd_is_valid_connid(conn_id_hint));
-	pthread_mutex_lock(&pfsd_connect_mutex);
-	while (true) {
-		//We use 2 to specialize odd id is for tool.
-		for (int i = conn_id_hint; i < CHNL_MAX_CONN; i += 2) {
-			ptr = pfsd_connect_data + i;
-			if (ptr->connect_id == 0) {
-				ptr->connect_id = i;
-				ptr->connect_data = ctx;
-				ptr->connect_op = (pfsd_chnl_op_t *) op;
-				conn_id = i;
-				break;
-			}
-		}
-		if (conn_id == -1 && conn_id_hint > 1) {
-			conn_id_hint = conn_id_hint % 2 + 4;
-			continue;
-		}
-		break;
-	}
-	if (conn_id < 0) {
-		fprintf(stderr, "failed to alloc conn id, hint %d\n",
-		    conn_id_hint);
-	}
-	return conn_id;
-}
-
-void
-pfsd_chnl_accept_begin_rollback(int32_t conn_id)
-{
-	if (pfsd_is_valid_connid(conn_id)) {
-		pfsd_connect_entry_t *ptr = pfsd_connect_data + conn_id;
-		ptr->connect_id = 0;
-	}
-}
-
-void
-pfsd_chnl_accept_end(int32_t conn_id, int mnt_id)
-{
-	if (pfsd_is_valid_connid(conn_id)) {
-		pfsd_connect_entry_t *ptr = pfsd_connect_data + conn_id;
-		ptr->connect_mntid = mnt_id;
-	}
-
-	pthread_mutex_unlock(&pfsd_connect_mutex);
 }
 
 int
@@ -455,49 +327,10 @@ pfsd_chnl_close(int32_t connect_id, bool forced)
 	return result;
 }
 
-int
-pfsd_chnl_close_begin(int32_t connect_id)
-{
-	assert (pfsd_is_valid_connid(connect_id));
-	int result = -1;
-	pfsd_connect_entry_t *ptr = NULL;
-	pthread_mutex_lock(&pfsd_connect_mutex);
-
-	ptr = pfsd_connect_data + connect_id;
-	if (ptr->connect_id != 0) {
-		if (ptr->connect_refcnt == 0) {
-			assert (ptr->connect_op);
-			result = ptr->connect_op->chnl_close(ptr->connect_data,
-			    true);
-			ptr->connect_id = 0;
-		} else {
-			errno = EAGAIN;
-		}
-	} else {
-		errno = EINVAL;
-	}
-
-	return result;
-}
-
-void
-pfsd_chnl_close_end()
-{
-	pthread_mutex_unlock(&pfsd_connect_mutex);
-}
-
 bool pfsd_is_valid_connid(int32_t cid)
 {
 	bool ok = cid > 0 && cid < CHNL_MAX_CONN;
 	if (!ok && cid != -1)
 		fprintf(stderr, "Wrong conn id %d\n", cid);
 	return ok;
-}
-
-bool
-pfsd_is_conn_closed(int32_t connect_id)
-{
-	if (!pfsd_is_valid_connid(connect_id))
-		return true;
-	return pfsd_connect_data[connect_id].connect_id != connect_id;
 }
