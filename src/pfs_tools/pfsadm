@@ -69,7 +69,7 @@ class SocketHandle(object):
             return
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(self.sockname)
-        self.sockfile = sock.makefile('rw', self.bufsize)
+        self.sockfile = sock.makefile('rwb', self.bufsize)
 
     def disconnect(self):
         if not self.sockfile:
@@ -180,7 +180,7 @@ class AdminOperation(object):
         '''This is the operation to be overloaded.
         The default behavior is to print out the payload.
         '''
-        sys.stdout.write(payload)
+        sys.stdout.write(payload.decode('ascii'))
 
     def execute(self):
         '''The usual steps of executing an request is as follows:
@@ -295,7 +295,7 @@ class AdminDu(AdminOperation):
     def __init__(self, args):
         pbdname = args.filepath.split('/')[1]
         super(AdminDu, self).__init__(ADM_COMMAND, CMD_DU, pbdname,
-            args.filepath, args.depth, 1 if args.all else 0)
+            bytes(args.filepath, 'ascii'), args.depth, 1 if args.all else 0)
 
 class AdminStat(AdminOperation):
     pass
@@ -353,7 +353,7 @@ class AdminInfo(AdminOperation):
 
     def __init__(self, args):
         super(AdminInfo, self).__init__(ADM_COMMAND, CMD_INFO, args.pbdname,
-            args.pbdname, args.depth)
+            bytes(args.pbdname, 'ascii'), args.depth)
 
 class AdminNameCache(AdminOperation):
     """request format is as follows
@@ -445,7 +445,7 @@ class AdminIostat(AdminOperation):
 
     def __init__(self, args):
         super(AdminIostat, self).__init__(ADM_COMMAND, CMD_IOSTAT, args.pbdname,
-            args.pbdname)
+            bytes(args.pbdname, 'ascii'))
         self.count = args.count
         self.wait = args.wait
         self.last_stat = DevStat()
@@ -482,8 +482,8 @@ class AdminIostat(AdminOperation):
         rdur, wdur = iostats[IO_READ].duration, iostats[IO_WRITE].duration
         acount = rcount + wcount
         adur = rdur + wdur
-        print '%-15s %7d %7d %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f' % (
-            stat.device_name,
+        print ( '%-15s %7d %7d %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f' % (
+            stat.device_name.decode('ascii'),
             int(self.normalize(rcount)) if rcount > 0 else 0,
             int(self.normalize(wcount)) if wcount > 0 else 0,
             self.normalize(rbytes) / (1<<20),
@@ -493,7 +493,7 @@ class AdminIostat(AdminOperation):
             0.0,
             float(delta2usec(adur)) / acount if acount > 0 else 0.0,
             self.normalize(qlen),
-            self.normalize(delta2usec(busydur)) / 10000)
+            self.normalize(delta2usec(busydur)) / 10000) )
 
     def handle_reply_payload(self, reply):
         fmts = ''.join(self.stathdrfmt_tuple)
@@ -537,7 +537,7 @@ class AdminIostat(AdminOperation):
         n = 0
         while self.count < 0 or n < self.count :
             if n % 20 == 0:
-                print '%-15s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s' % (
+                print ('%-15s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s' % (
                     'device',
                     'r/s',
                     'w/s',
@@ -548,7 +548,7 @@ class AdminIostat(AdminOperation):
                     'us/o',
                     'us/t',
                     'qlen',
-                    '%util')
+                    '%util') )
             self.iostat()
             n += 1
 
@@ -591,9 +591,9 @@ class AdminMountstat(AdminOperation):
     def __init__(self, args):
         super(AdminMountstat, self).__init__(ADM_COMMAND, CMD_MOUNTSTAT,
                                              args.pbdname,
-                                             args.pbdname, args.begin_time,
-                                             args.range, args.file_type,
-                                             args.sample_type)
+                                             bytes(args.pbdname, 'ascii'), args.begin_time,
+                                             args.range, bytes(args.file_type, 'ascii'),
+                                             bytes(args.sample_type, 'ascii'))
         self.count = args.count
         self.wait = args.wait
         if args.begin_time > 0 or args.sample_type != '':
@@ -702,7 +702,7 @@ class AdminNameCacheStat(AdminOperation):
         else :
            hitratio = 0
         timestamp = time.localtime(self.last_timestamp.seconds)
-        print "%02d:%02d:%02d   %8d %10d %10d %8.2f %8d %8d %8d" % (
+        print ("%02d:%02d:%02d   %8d %10d %10d %8.2f %8d %8d %8d" % (
               timestamp[3], timestamp[4], timestamp[5], \
               stat.numcache, \
               int(self.normalize(self.delta_hits)) if self.delta_hits > 0 else 0, \
@@ -711,7 +711,7 @@ class AdminNameCacheStat(AdminOperation):
               int(self.normalize(self.delta_evicts)) if self.delta_evicts > 0 else 0, \
               int(self.normalize(self.delta_dels)) if self.delta_dels > 0 else 0, \
               int(self.normalize(self.delta_rejects)) if self.delta_rejects > 0 else 0 \
-              )
+              ))
 
     def handle_reply_payload(self, reply):
         """packet format: timeval, namecachestat"""
@@ -740,7 +740,7 @@ class AdminNameCacheStat(AdminOperation):
         error = 0
         self.send_request_msg()
         while True:
-            error, payload, need_replay_break = self.recv_reply_msg()
+            error, payload = self.recv_reply_msg()
             if error != 0 or payload is None:
                 break
             self.handle_reply_payload(payload)
@@ -751,7 +751,7 @@ class AdminNameCacheStat(AdminOperation):
         n = 0
         while self.count < 0 or n < self.count :
             if n % 20 == 0:
-                print "%8s %10s %10s %10s %8s %8s %8s %8s" % (
+                print ("%8s %10s %10s %10s %8s %8s %8s %8s" % (
                     'time',
                     'numcache',
                     'hit/s',
@@ -759,7 +759,7 @@ class AdminNameCacheStat(AdminOperation):
                     'hit%/s',
                     'evict/s',
                     'del/s',
-                    'reject/s')
+                    'reject/s'))
 
             self.do_stat()
             n += 1
@@ -792,7 +792,7 @@ def main():
         sys.stderr.write('exception occured while handle command: %s\n' % e)
         err = e.errno
     except KeyboardInterrupt as e:
-        print "exit"
+        print("exit")
     sys.exit(err)
 
 if __name__ == '__main__':
