@@ -82,4 +82,7 @@ int 	pfs_leader_read(pfs_mount_t *mnt, pfs_leader_record_t *leader_ret);
 int	paxos_hostid_local_lock(const char *pbdname, int hostid, const char *caller);
 void	paxos_hostid_local_unlock(int fd);
 
+int read_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr,
+		uint32_t *checksum);
+
 #endif

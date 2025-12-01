@@ -240,6 +240,9 @@ PFS_OPTION_REG(poll_interval, pfs_check_ival_normal);
 static int64_t orphan_interval = 1;
 PFS_OPTION_REG(orphan_interval, pfs_check_ival_normal);
 
+static int64_t metadata_check_concurrency = 16;
+PFS_OPTION_REG(metadata_check_concurrency, pfs_check_ival_normal);
+
 bool
 pfs_check_ival_orphan_select(void *data)
 {
@@ -294,6 +297,14 @@ pfs_mount_needsync(pfs_mount_t *mnt)
 int
 pfs_mount_sync(pfs_mount_t *mnt)
 {
+	if (mnt->mnt_log.log_header_checker != nullptr) {
+		bool updated =
+			mnt->mnt_log.log_header_checker->log_head_lsn_changed();
+		if (!updated) {
+			return 0;
+		}
+	}
+
 	int rv;
 	struct tx_qhead rplhead;
 	MNT_STAT_BEGIN();
@@ -564,6 +575,14 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 	mnt->mnt_flags = flags;
 	mnt->mnt_ioch_desc = iodesc;
 
+	mnt->mnt_log.log_metadata_check_concurrency =
+		metadata_check_concurrency;
+	if (mnt->mnt_log.log_metadata_check_concurrency > 0) {
+		mnt->mnt_log.log_header_checker =
+			new pfs_group_log_header_checker(
+				metadata_check_concurrency, mnt);
+	}
+
 	*mntp = mnt;
 	return 0;
 
@@ -643,7 +662,7 @@ pfs_destroy_mount(pfs_mount_t *mnt)
 		mnt->mnt_ioch_desc = -1;
 	}
 
-	// destory pfs read/write lock
+	// destroy pfs read/write lock
 	rwlock_destroy(&mnt->mnt_meta_rwlock);
 	mnt->mnt_inodetree_rwlock->destroy();
 	delete mnt->mnt_inodetree_rwlock;
@@ -671,6 +690,8 @@ pfs_destroy_mount(pfs_mount_t *mnt)
 	mnt->mnt_status = 0;
 	mnt->mnt_admin = NULL;
 	mnt->mnt_discard_force = false;
+
+	delete mnt->mnt_log.log_header_checker;
 
 	pfs_mem_free(mnt, M_MOUNT);
 }

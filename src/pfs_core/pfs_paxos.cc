@@ -242,8 +242,10 @@ _leader_read_one(pfs_mount_t *mnt, struct pfs_leader_record *leader_ret)
 
 	memset(&leader, 0, sizeof(struct pfs_leader_record));
 	rv = read_leader(mnt, &leader, &checksum);
-	if (rv < 0)
+	if (rv < 0) {
+		memset(leader_ret, 0, sizeof(pfs_leader_record));
 		return rv;
+	}
 	rv = verify_leader(mnt, &leader, checksum);
 
 	/* copy what we read even if verify finds a problem */

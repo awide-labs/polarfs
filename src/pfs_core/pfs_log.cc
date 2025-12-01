@@ -950,11 +950,15 @@ pfs_log_load(pfs_log_t *log, pfs_leader_record_t *latest, log_req_t *req)
 
 	if (latest == NULL) {
 		latest = &leader;
-		memset(latest, 0, sizeof(*latest));
 		rv = pfs_leader_read(log->log_mount, latest);
 		if (rv < 0) {
 			pfs_etrace("Read paxos leader failed in TXT_LOG_LOAD, err=%d\n", rv);
 			return rv;
+		}
+
+		if (log->log_header_checker != nullptr) {
+			log->log_header_checker->update_last_head_lsn(
+				latest->head_lsn);
 		}
 	}
 
@@ -1031,7 +1035,6 @@ pfs_log_poll(pfs_log_t *log, const pfs_leader_record_t *latest, log_req_t *req)
 
 		}
 
-		memset(&cur_lr, 0, sizeof(cur_lr));
 		rv = pfs_leader_read(mnt, &cur_lr);
 		if (rv < 0)
 			return rv;
@@ -1098,6 +1101,11 @@ pfs_log_poll(pfs_log_t *log, const pfs_leader_record_t *latest, log_req_t *req)
 	lr->head_txid = latest->head_txid;
 	lr->head_offset = latest->head_offset;
 	lr->head_lsn = latest->head_lsn;
+
+	if (log->log_header_checker != nullptr) {
+		log->log_header_checker->update_last_head_lsn(latest->head_lsn);
+	}
+
 	return rlen;
 }
 

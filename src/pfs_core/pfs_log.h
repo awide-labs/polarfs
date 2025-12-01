@@ -19,6 +19,7 @@
 #include <sys/queue.h>
 #include <pthread.h>
 
+#include "pfs_work_groups.h"
 #include "pfs_paxos.h"
 #include "pfs_tx.h"
 
@@ -86,6 +87,51 @@ typedef struct pfs_trimgroup {
 	void				*g_rootp;	/* bda search index */
 } pfs_trimgroup_t;
 
+/*
+ * Class used to pre-check metadata log header position.
+ * Worker thread calls log_head_lsn_changed() to verify if head lsn is changed.
+ * Number of header read requests that can be run simultaneously is limited by
+ * "size" parameter.
+ * Log thread calls update_last_head_lsn() when it completed log metadata pull.
+ */
+struct pfs_group_log_header_checker {
+	pfs_group_log_header_checker(int size, pfs_mount_t *mnt)
+		: gr(size)
+		, mnt(mnt)
+		, last_head_lsn(0)
+	{
+	}
+	bool log_head_lsn_changed()
+	{
+		auto result = gr.run([this]() {
+			pfs_leader_record lr;
+			uint32_t checksum;
+			int rv = read_leader(mnt, &lr, &checksum);
+			std::optional<uint64_t> r;
+			if (rv >= 0) {
+				r = lr.head_lsn;
+			}
+			return r;
+		});
+		if (result.has_value()) {
+			auto lsn = result.value();
+			auto prev_lsn =
+				last_head_lsn.load(std::memory_order_acquire);
+			return prev_lsn != lsn;
+		}
+		return true;
+	}
+	void update_last_head_lsn(uint64_t lsn)
+	{
+		last_head_lsn.store(lsn, std::memory_order_release);
+	}
+
+    private:
+	GroupedWorkRunner<uint64_t> gr;
+	pfs_mount_t *mnt;
+	std::atomic<uint64_t> last_head_lsn;
+};
+
 typedef struct pfs_log {
 	pfs_mount_t	*log_mount;
 	int		log_state;
@@ -112,6 +158,9 @@ typedef struct pfs_log {
 	bool		log_paxos_got;	/* whether got paxos */
 	pfs_leader_record_t	log_leader_latest;/* cache of disk pfs_leader_record */
 	struct timespec	log_paxos_ts;	/* timestamp of having got paxos */
+
+	int		log_metadata_check_concurrency;
+	pfs_group_log_header_checker	*log_header_checker;
 } pfs_log_t;
 
 typedef struct pfs_logentry_phy {
