@@ -55,7 +55,7 @@ main() {
 
     local -r version="$VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH${VERSION_EXTRA:-}"
 
-    local -r release=${2:-"1"}
+    local -r release=${1:-"1"}
 
     ./autobuild.sh
 
