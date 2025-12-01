@@ -116,6 +116,7 @@ static void
 pfsd_mount_atfork_child_init()
 {
 	pfs_mount_atfork_child(s_mount_local_info);
+	pfsd_getpid_slow();
 }
 
 /* when child process is ready */
@@ -126,7 +127,7 @@ pfsd_atfork_child_post()
 
 	struct timeval now;
 	gettimeofday(&now, NULL);
-	srand((unsigned)((now.tv_sec + now.tv_usec) ^ getpid()));
+	srand((unsigned)((now.tv_sec + now.tv_usec) ^ pfs_getpid()));
 
 	pfsd_sdk_file_init();
 	pfsd_mount_atfork_child_init();

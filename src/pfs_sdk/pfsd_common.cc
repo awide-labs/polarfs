@@ -14,12 +14,25 @@
  */
 
 #include <errno.h>
+#include <mutex>
 #include <string.h>
 #include <assert.h>
 #include <sys/file.h>
 
 #include "pfsd_common.h"
 #include "pfsd_proto.h"
+
+static std::mutex s_pid_init_mutex;
+
+pid_t g_pid = -1;
+
+pid_t
+pfsd_getpid_slow()
+{
+	std::lock_guard lk(s_pid_init_mutex);
+	g_pid = getpid();
+	return g_pid;
+}
 
 void
 pfsd_robust_mutex_init(pthread_mutex_t *mutex)
@@ -144,7 +157,7 @@ pfsd_write_pid(const char *pbdname) {
 	}
 
 	char buf[128];
-	size_t size = snprintf(buf, sizeof(buf), "%ld", (long)getpid());
+	size_t size = snprintf(buf, sizeof(buf), "%ld", (long)pfs_getpid());
 	int ret = write(fd, buf, size);
 	if (ret != (int)size) {
 		close(fd);

@@ -235,7 +235,7 @@ pfsd_print_all_channels(pfsd_shm_t *shm)
 pfsd_request_t *
 pfsd_shm_get_request(pfsd_iochannel_t *ch, int connid)
 {
-	pid_t pid = getpid();
+	pid_t pid = pfs_getpid();
 
 	PFSD_ASSERT (ch->ch_magic == PFSD_SHM_MAGIC);
 	int index;
@@ -295,7 +295,7 @@ pfsd_shm_put_request(pfsd_iochannel_t *ch, pfsd_request_t *req)
 	PFSD_ASSERT(ch->ch_magic == PFSD_SHM_MAGIC);
 
 	int index = req - ch->ch_requests;
-	pid_t pid = getpid();
+	pid_t pid = pfs_getpid();
 
 	if ((ch->ch_free_bitmap & (0x1UL << index)) != 0) {
 		PFSD_CLIENT_ELOG("req(%d) channel bitmap(0x%lx) invalid. Maybe "
@@ -333,7 +333,7 @@ pfsd_shm_send_request(pfsd_iochannel_t *ch, pfsd_request_t *req)
 
 	int index = req - ch->ch_requests;
 	PFSD_ASSERT(index >= 0 && index < ch->ch_max_req);
-	PFSD_ASSERT(req->owner == getpid());
+	PFSD_ASSERT(req->owner == pfs_getpid());
 
 	int64_t old_val = req->val;
 	int64_t new_val = pfsd_request_set_state(old_val, REQ_WAIT_REPLY);
@@ -499,15 +499,15 @@ pfsd_wait_io(pfsd_request_t *req, sem_t *sem)
 		} else if (errno != ETIMEDOUT && errno != EINTR) {
 			PFSD_CLIENT_ELOG(
 			    "pid %d got error [%s] when wait for req type %d",
-			    getpid(), strerror(errno), req->type);
+			    pfs_getpid(), strerror(errno), req->type);
 		}
 	}
 
 	pid_t owner = req->owner;
-	if (owner != getpid()) {
+	if (owner != pfs_getpid()) {
 		PFSD_CLIENT_ELOG("current pid %d NOT match request owner %d",
-		    getpid(), owner);
-		PFSD_ASSERT(req->owner == getpid());
+		    pfs_getpid(), owner);
+		PFSD_ASSERT(req->owner == pfs_getpid());
 	}
 }
 

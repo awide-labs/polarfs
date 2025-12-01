@@ -47,10 +47,23 @@
 struct pfsd_request;
 typedef pfsd_request pfsd_request_t;
 
+extern pid_t g_pid;
+
+pid_t pfsd_getpid_slow();
+
+static inline pid_t
+pfs_getpid()
+{
+	if (g_pid == -1) {
+		return pfsd_getpid_slow();
+	}
+	return g_pid;
+}
+
 static inline
 int pfsd_make_pid_name(char* buf, size_t size)
 {
-	return snprintf(buf, size, PID_FORMAT, int(getpid()));
+	return snprintf(buf, size, PID_FORMAT, int(pfs_getpid()));
 }
 
 /* make shm pathname */
@@ -147,14 +160,14 @@ int FormatTime(char* buf, size_t bufsize)
 	char _buf_[256]; \
 	int _len_ = FormatTime(_buf_, sizeof(_buf_)); \
 	fprintf(stderr, "[PFSD_SDK INF %.*s][%d]%s %d: " fmt "\n", \
-	    (_len_ > 0 ? _len_-1 : 0), _buf_, getpid(), __func__, __LINE__, ##__VA_ARGS__); \
+	    (_len_ > 0 ? _len_-1 : 0), _buf_, pfs_getpid(), __func__, __LINE__, ##__VA_ARGS__); \
 } while(0)
 
 #define PFSD_CLIENT_ELOG(fmt, ...) do { \
 	char _buf_[256]; \
 	int _len_ = FormatTime(_buf_, sizeof(_buf_)); \
 	fprintf(stderr, "[PFSD_SDK ERR %.*s][%d]%s %d: " fmt "\n", \
-	    (_len_ > 0 ? _len_-1 : 0), _buf_, getpid(), __func__, __LINE__, ##__VA_ARGS__); \
+	    (_len_ > 0 ? _len_-1 : 0), _buf_, pfs_getpid(), __func__, __LINE__, ##__VA_ARGS__); \
 } while(0)
 
 /* PFSD_CPUSET_FILE must in same volume for all pods */

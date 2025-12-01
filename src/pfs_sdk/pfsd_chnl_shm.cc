@@ -959,7 +959,7 @@ chnl_ctx_create_shm(const char *svr_addr, bool is_svr)
 	}
 
 	name_len = snprintf(result->ctx_pidfile_addr, PFSD_MAX_SVR_ADDR_SIZE,
-	    "%s/%d.pid", svr_addr, getpid());
+	    "%s/%d.pid", svr_addr, pfs_getpid());
 	if (name_len >= PFSD_MAX_SVR_ADDR_SIZE) {
 		errno = ENAMETOOLONG;
 		goto fail;

@@ -97,8 +97,8 @@ int main(int ac, char *av[])
 
 	pfs_log_functor = wrapper_zlog;
 
-	fprintf(stderr, "starting pfsd[%d] %s\n", getpid(), pbdname);
-	pfsd_info("starting pfsd[%d] %s", getpid(), pbdname);
+	fprintf(stderr, "starting pfsd[%d] %s\n", pfs_getpid(), pbdname);
+	pfsd_info("starting pfsd[%d] %s", pfs_getpid(), pbdname);
 
 	pfsd_chnl_init();
 
