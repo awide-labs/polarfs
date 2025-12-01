@@ -30,6 +30,7 @@ SET(SRC_LIST_PFSD pfsd_main.cc
                   pfsd_option.cc
                   pfsd_shm.cc
                   pfsd_worker.cc
+                  ../pfs_core/lib/dclcrwlock.cc
     )
 
 # macro definition
