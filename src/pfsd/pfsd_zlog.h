@@ -16,7 +16,7 @@
 #ifndef _PFSD_ZLOG_H_
 #define _PFSD_ZLOG_H_
 
-#include <zlog.h>
+#include "third-party/zlog/src/zlog.h"
 
 #define CHKSVR_LOG_LEVEL_DEBUG  20
 #define CHKSVR_LOG_LEVEL_INFO   40

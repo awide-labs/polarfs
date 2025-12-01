@@ -18,6 +18,7 @@ include_directories(
     ${PROJECT_BINARY_DIR}/third-party/folly/
     ${PROJECT_SOURCE_DIR}/third-party/folly/
     ${PROJECT_SOURCE_DIR}/src/
+    ${PROJECT_SOURCE_DIR}/
 )
 
 link_directories(
@@ -57,7 +58,7 @@ target_link_libraries(pfsdaemon
     -Wl,--start-group
     -Wl,--no-as-needed
     pfs
-    zlog
+    ${PROJECT_BINARY_DIR}/third-party/zlog/lib/libzlog.a
     glog
     folly
     pthread
