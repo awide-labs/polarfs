@@ -1812,7 +1812,33 @@ pfsd_access(const char *pbdpath, int amode)
 int
 pfsd_fsync(int fd)
 {
-	return 0;
+	pfsd_file_t *file = NULL;
+
+	PFSD_SDK_GET_FILE(fd);
+
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+
+	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
+		errno = err;
+		return -1;
+	}
+
+	/* fill request */
+	req->type = PFSD_REQUEST_FSYNC;
+	req->req.fc_req.f_ino = file->f_inode;
+	req->req.fc_req.common_pl_req = file->f_common_pl;
+
+	client->executeRequest(r.rp, req);
+
+	int result = req->rsp.fc_rsp.f_res;
+
+	pfsd_put_file(file);
+
+	pfsd_free_req_and_buf(r);
+
+	return result;
 }
 
 ssize_t

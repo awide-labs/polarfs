@@ -64,6 +64,7 @@ struct Request : folly::cacheline_align_t {
     rename_request_t re_req;
     lseek_request_t l_req;
     access_request_t a_req;
+    fsync_request_t fc_req;
   } req;
   union {
     struct {
@@ -87,6 +88,7 @@ struct Request : folly::cacheline_align_t {
     rename_response_t re_rsp;
     lseek_response_t l_rsp;
     access_response_t a_rsp;
+    fsync_response_t fc_rsp;
   } rsp;
 };
 

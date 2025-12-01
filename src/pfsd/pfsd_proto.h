@@ -44,6 +44,7 @@ enum {
 	PFSD_REQUEST_RENAME,
 	PFSD_REQUEST_LSEEK,
 	PFSD_REQUEST_GROWFS,
+	PFSD_REQUEST_FSYNC,
 
 	PFSD_RESPONSE_MOUNT = 1000, /* Deprecated */
 	PFSD_RESPONSE_OPEN,
@@ -64,6 +65,7 @@ enum {
 	PFSD_RESPONSE_RENAME,
 	PFSD_RESPONSE_LSEEK,
 	PFSD_RESPONSE_GROWFS,
+	PFSD_RESPONSE_FSYNC,
 };
 
 inline
@@ -420,6 +422,18 @@ typedef struct {
 
 	off_t l_offset;
 } lseek_response_t;
+
+typedef struct {
+	COMMON_REQUEST_HEADER;
+
+	int64_t f_ino;
+} fsync_request_t;
+
+typedef struct {
+	COMMON_RESPONSE_HEADER;
+
+	int f_res;
+} fsync_response_t;
 
 
 /* For dirent buffer */

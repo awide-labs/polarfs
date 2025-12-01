@@ -897,3 +897,32 @@ pfsd_lseek_end_svr(pfs_mount_t* mnt, pfs_inode_t* in, off_t off, uint64_t btime)
 	return newoff;
 }
 
+static int
+pfsd_file_fsync(pfs_mount_t *mnt, pfs_inode_t *in [[maybe_unused]], uint64_t btime [[maybe_unused]])
+{
+	int err;
+
+	err = pfsdev_flush(mnt->mnt_ioch_desc);
+	return err;
+}
+
+int
+pfsd_fsync_svr(pfs_mount_t *mnt, pfs_inode_t *in, uint64_t btime)
+{
+	assert (mnt && inode);
+
+	int err = -EAGAIN;
+
+	API_ENTER(DEBUG, "%ld", in->in_ino);
+
+	MNT_STAT_API_BEGIN(MNT_STAT_API_FSYNC);
+	while (err == -EAGAIN) {
+		err = pfsd_file_fsync(mnt, in, btime);
+	}
+	MNT_STAT_API_END(MNT_STAT_API_FSYNC);
+
+	API_EXIT(err);
+	if (err < 0)
+		return -1;
+	return 0;
+}

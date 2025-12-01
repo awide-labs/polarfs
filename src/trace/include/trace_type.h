@@ -229,6 +229,7 @@ enum StatType {
     STAT_PFS_API_PREAD_DONE       = PFS_STAT_TYPE_BASE + 10,
     STAT_PFS_API_PWRITE_DONE      = PFS_STAT_TYPE_BASE + 11,
     STAT_PFS_DEV_TRIM_DONE        = PFS_STAT_TYPE_BASE + 12,
+    STAT_PFS_DEV_FLUSH_DONE       = PFS_STAT_TYPE_BASE + 13,
 };
 
 const static int32_t bsr_timeout_array[HISTGRAM_TYPE_CNT] = {

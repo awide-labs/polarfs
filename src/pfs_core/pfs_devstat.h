@@ -26,6 +26,7 @@ enum {
     PFSDEV_REQ_RD       = 2,
     PFSDEV_REQ_WR       = 3,
     PFSDEV_REQ_TRIM     = 4,
+    PFSDEV_REQ_FLUSH    = 5,
 
     PFSDEV_REQ_MAX,
 };

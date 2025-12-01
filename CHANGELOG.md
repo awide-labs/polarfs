@@ -8,6 +8,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Add `diskdev_flush_enable` option to the block device backend, allowing
+  FLUSH commands to be skipped on devices with Power Loss Protection (XCOM-50)
+
+### Fixed
+- Implement `pfsd_fsync()` and `pfs_fsync()` support for block device backend (XCOM-50)
+
 ## [2.0.0] - 2025-08-11
 
 This is the first release by AwydeX. Changes compared to the open source PolarFS

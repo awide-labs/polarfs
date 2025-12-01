@@ -37,6 +37,9 @@ enum {
 static int64_t diskdev_trim_enable = DISKTRIM_DISABLE;
 PFS_OPTION_REG(diskdev_trim_enable, pfs_check_ival_normal);
 
+static int64_t diskdev_flush_enable = PFS_OPT_ENABLE;
+PFS_OPTION_REG(diskdev_flush_enable, pfs_check_ival_switch);
+
 typedef struct pfs_diskdev {
 	pfs_dev_t	dk_base;
 	int		dk_fd;
@@ -387,6 +390,13 @@ pfs_diskdev_io_prep_pwrite(pfs_diskdev_t *dkdev, pfs_devio_t *io, struct iocb *i
 }
 
 static int
+pfs_diskdev_io_prep_flush(pfs_diskdev_t *dkdev, pfs_devio_t *io, struct iocb *iocb)
+{
+	io_prep_fsync(iocb, dkdev->dk_fd);
+	return 0;
+}
+
+static int
 pfs_diskdev_io_trim(pfs_diskdev_t *dkdev, pfs_devio_t *io)
 {
 	int err;
@@ -486,6 +496,11 @@ pfs_diskdev_submit_io(pfs_dev_t *dev, pfs_ioq_t *ioq, pfs_devio_t *io)
 		TAILQ_INSERT_TAIL(&dkioq->dkq_inflight_queue, io, io_next);
 		dkioq->dkq_inflight_count++;
 		return 0;
+	} else if (io->io_op == PFSDEV_REQ_FLUSH && diskdev_flush_enable == PFS_OPT_DISABLE) {
+		io->io_error = 0;
+		TAILQ_INSERT_TAIL(&dkioq->dkq_inflight_queue, io, io_next);
+		dkioq->dkq_inflight_count++;
+		return 0;
 	}
 
 	err = 0;
@@ -497,6 +512,9 @@ pfs_diskdev_submit_io(pfs_dev_t *dev, pfs_ioq_t *ioq, pfs_devio_t *io)
 		break;
 	case PFSDEV_REQ_WR:
 		err = pfs_diskdev_io_prep_pwrite(dkdev, io, iocb);
+		break;
+	case PFSDEV_REQ_FLUSH:
+		err = pfs_diskdev_io_prep_flush(dkdev, io, iocb);
 		break;
 	default:
 		pfs_etrace("invalid io task! op: %d, bufp: %p, len: %zu, bda%lu\n",

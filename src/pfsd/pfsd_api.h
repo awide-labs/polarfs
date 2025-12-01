@@ -50,5 +50,7 @@ int	pfsd_readdir_svr(pfs_mount_t *mnt, int64_t dino, int64_t ino,
 
 off_t	pfsd_lseek_end_svr(pfs_mount_t *mnt, pfs_inode_t *in, off_t off, uint64_t btime);
 
+int	pfsd_fsync_svr(pfs_mount_t *mnt, pfs_inode_t *in, uint64_t btime);
+
 #endif
 

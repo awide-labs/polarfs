@@ -140,6 +140,7 @@ int	pfsdev_close(int devi);
 int	pfsdev_info(int devi, pbdinfo_t *pi);
 int	pfsdev_reload(int devi);
 int	pfsdev_trim(int devi, uint64_t bda);
+int	pfsdev_flush(int devi);
 int	pfsdev_pread_flags(int devi, void *buf, size_t len, uint64_t bda,
 	    int flags);
 int	pfsdev_pwrite_flags(int devi, void *buf, size_t len, uint64_t bda,

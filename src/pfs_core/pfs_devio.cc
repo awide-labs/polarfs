@@ -272,6 +272,7 @@ pfs_io_start(pfs_devio_t *io)
 	case PFSDEV_REQ_RD:	stat = STAT_PFS_DEV_READ_BW; break;
 	case PFSDEV_REQ_WR: 	stat = STAT_PFS_DEV_WRITE_BW; break;
 	case PFSDEV_REQ_TRIM:	stat = -1; break;
+	case PFSDEV_REQ_FLUSH:	stat = -1; break;
 	default: PFS_ASSERT("io_start bad op" == NULL); break;
 	}
 	if (stat < 0)
@@ -290,6 +291,7 @@ pfs_io_end(pfs_devio_t *io)
 	case PFSDEV_REQ_RD:	stat = STAT_PFS_DEV_READ_DONE; break;
 	case PFSDEV_REQ_WR: 	stat = STAT_PFS_DEV_WRITE_DONE; break;
 	case PFSDEV_REQ_TRIM: 	stat = STAT_PFS_DEV_TRIM_DONE; break;
+	case PFSDEV_REQ_FLUSH: 	stat = STAT_PFS_DEV_FLUSH_DONE; break;
 	default: PFS_ASSERT("io_end bad op" == NULL); break;
 	}
 	PFS_STAT_LATENCY_VALUE((StatType)stat, &io->io_start_ts);
@@ -299,6 +301,7 @@ pfs_io_end(pfs_devio_t *io)
 		case PFSDEV_REQ_RD:	stat = MNT_STAT_DEV_READ; break;
 		case PFSDEV_REQ_WR: 	stat = MNT_STAT_DEV_WRITE; break;
 		case PFSDEV_REQ_TRIM: 	stat = MNT_STAT_DEV_TRIM; break;
+		case PFSDEV_REQ_FLUSH: 	stat = MNT_STAT_DEV_FLUSH; break;
 		default: PFS_ASSERT("io_end bad op" == NULL); break;
 	}
 
@@ -517,6 +520,24 @@ pfsdev_trim(int devi, uint64_t bda)
 
 	io = pfs_io_create(dev, PFSDEV_REQ_TRIM, NULL, PFSDEV_TRIMSIZE, bda,
 	    IO_WAIT);
+	PFS_VERIFY(io != NULL);
+
+	return pfsdev_do_io(dev, io);
+}
+
+int
+pfsdev_flush(int devi)
+{
+	pfs_dev_t *dev;
+	pfs_devio_t *io;
+
+	PFS_ASSERT(0 <= devi && devi < PFS_MAX_NCHD);
+	dev = pfs_devs[devi];
+	PFS_ASSERT(dev != NULL);
+	/* fsync() on read-only file system is noop */
+	if (!dev_writable(dev))
+		return 0;
+	io = pfs_io_create(dev, PFSDEV_REQ_FLUSH, NULL, 0, 0, IO_WAIT);
 	PFS_VERIFY(io != NULL);
 
 	return pfsdev_do_io(dev, io);

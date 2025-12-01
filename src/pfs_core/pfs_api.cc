@@ -821,7 +821,16 @@ _pfs_du(const char *pbdpath, int all, int depth, pfs_printer_t *printer)
 static int
 _pfs_fsync(int fd)
 {
-	return 0;
+	int err;
+	pfs_mount_t *mnt = NULL;
+	pfs_file_t *file = NULL;
+
+	GET_MOUNT_FILE(fd, RDLOCK_FLAG, &mnt, &file);
+
+	err = pfsdev_flush(mnt->mnt_ioch_desc);
+
+	PUT_MOUNT_FILE(mnt, file);
+	return err;
 }
 
 static ssize_t

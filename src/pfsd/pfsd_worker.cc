@@ -178,6 +178,14 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 		return 0;
 	}
 
+	case PFSD_REQUEST_FSYNC: {
+		MNT_STAT_API_BEGIN(MNT_STAT_API_FSYNC);
+		pfsd_worker_handle_fsync(server, connId, r, &r->req.fc_req,
+					 &r->rsp.fc_rsp);
+		MNT_STAT_API_END(MNT_STAT_API_FSYNC);
+		return 0;
+	}
+
 	default:
 		pfsd_error("worker: unknown request %d", r->type);
 		return -1;
@@ -711,4 +719,31 @@ pfsd_worker_handle_lseek(ipc::Server *server, uint64_t connId, ipc::Request *r,
 	} else
 		pfsd_debug("pid %d lseek ino %ld, off %ld", g_currentPid, ino, off);
 }
+
+void
+pfsd_worker_handle_fsync(ipc::Server *server, uint64_t connId, ipc::Request *r,
+    const fsync_request_t *req, fsync_response_t *rsp)
+{
+	rsp->type = PFSD_RESPONSE_FSYNC;
+
+	CHECK_RSP_ERROR(rsp);
+
+	int64_t ino = req->f_ino;
+
+	pfs_mount_t *mnt = NULL;
+	pfs_inode_t *inode = NULL;
+	PFSD_GET_MOUNT_AND_INODE(req->mntid, ino, rsp);
+
+	rsp->f_res = pfsd_fsync_svr(mnt, inode, req->common_pl_req.pl_btime);
+
+	PFSD_PUT_MOUNT_AND_INODE(mnt, inode);
+
+	if (rsp->f_res < 0) {
+		rsp->error = errno;
+		pfsd_error("pid %d fsync error %d, ino %ld",
+		    g_currentPid, rsp->error, ino);
+	} else
+		pfsd_debug("pid %d fsync ino %ld", g_currentPid, ino);
+}
+
 

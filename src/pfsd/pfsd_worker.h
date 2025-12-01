@@ -101,6 +101,9 @@ void pfsd_worker_handle_access(ipc::Server *ipc_server, uint64_t connId,
 void pfsd_worker_handle_lseek(ipc::Server *ipc_server, uint64_t connId,
 			      ipc::Request *r, const lseek_request_t *req,
 			      lseek_response_t *rsp);
+void pfsd_worker_handle_fsync(ipc::Server *server, uint64_t connId,
+			      ipc::Request *r, const fsync_request_t *req,
+			      fsync_response_t *rsp);
 
 /*for debug : return current processing request's pid  */
 pid_t pfsd_worker_current_processing_pid();
