@@ -45,6 +45,8 @@ enum pfsd_chnl_req_type {
 	CHNL_ABORT		= 8,
 };
 
+void pfsd_sdk_chnl_init();
+
 int32_t pfsd_chnl_connect(const char *svr_addr, const char *cluster,
     int timeout_ms, const char *pbdname, int host_id, int flags);
 
@@ -74,6 +76,10 @@ int pfsd_chnl_listen(const char *svr_addr, const char *pbdname, int nworkers,
     void *arg1, void *arg2);
 
 /* server side */
+void pfsd_chnl_init();
+
+void pfsd_chnl_destroy();
+
 int32_t pfsd_chnl_accept_begin(void *ctx, void *op, int32_t conn_id_hint);
 
 void pfsd_chnl_accept_begin_rollback(int32_t conn_id);

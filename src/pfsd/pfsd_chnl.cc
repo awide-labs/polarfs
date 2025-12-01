@@ -22,13 +22,29 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
+#include "lib/dclcrwlock.h"
 #include "pfsd_common.h"
 #include "pfsd_chnl.h"
 #include "pfsd_chnl_impl.h"
 
 static pthread_mutex_t pfsd_connect_mutex = PTHREAD_MUTEX_INITIALIZER;
+static DCLCRWLock pfsd_connect_rwlocks[CHNL_MAX_CONN];
 
 static pfsd_connect_entry_t pfsd_connect_data[CHNL_MAX_CONN];
+
+void pfsd_chnl_init()
+{
+	for (auto &rwlock : pfsd_connect_rwlocks) {
+		rwlock.init();
+	}
+}
+
+void pfsd_chnl_destroy()
+{
+	for (auto &rwlock : pfsd_connect_rwlocks) {
+		rwlock.destroy();
+	}
+}
 
 static pfsd_connect_entry_t *
 pfsd_connect_get_entry(int32_t connect_id)
@@ -38,14 +54,12 @@ pfsd_connect_get_entry(int32_t connect_id)
 		errno = EINVAL;
 		return result;
 	}
-	pthread_mutex_lock(&pfsd_connect_mutex);
+	pfsd_connect_rwlocks[connect_id].lock_shared();
 
 	if(pfsd_connect_data[connect_id].connect_id == connect_id) {
 		result = &pfsd_connect_data[connect_id];
-		++result->connect_refcnt;
 	}
 
-	pthread_mutex_unlock(&pfsd_connect_mutex);
 	return  result;
 }
 
@@ -57,12 +71,10 @@ pfsd_connect_put_entry(int32_t connect_id)
 		errno = EINVAL;
 		return result;
 	}
-	pthread_mutex_lock(&pfsd_connect_mutex);
 	if(pfsd_connect_data[connect_id].connect_id == connect_id) {
 		result = &pfsd_connect_data[connect_id];
-		--result->connect_refcnt;
 	}
-	pthread_mutex_unlock(&pfsd_connect_mutex);
+	pfsd_connect_rwlocks[connect_id].unlock_shared();
 	return  result;
 }
 
@@ -176,13 +188,16 @@ pfsd_chnl_accept_begin(void *ctx, void *op, int32_t conn_id_hint)
 		//We use 2 to specialize odd id is for tool.
 		for (int i = conn_id_hint; i < CHNL_MAX_CONN; i += 2) {
 			ptr = pfsd_connect_data + i;
-			if (ptr->connect_id == 0) {
+			auto locked = pfsd_connect_rwlocks[i].try_lock();
+			if (locked && ptr->connect_id == 0) {
 				ptr->connect_id = i;
 				ptr->connect_data = ctx;
 				ptr->connect_op = (pfsd_chnl_op_t *) op;
+				pfsd_connect_rwlocks[i].unlock();
 				conn_id = i;
 				break;
 			}
+			if (locked) pfsd_connect_rwlocks[i].unlock();
 		}
 		if (conn_id == -1 && conn_id_hint > 1) {
 			conn_id_hint = conn_id_hint % 2 + 4;
@@ -202,7 +217,9 @@ pfsd_chnl_accept_begin_rollback(int32_t conn_id)
 {
 	if (pfsd_is_valid_connid(conn_id)) {
 		pfsd_connect_entry_t *ptr = pfsd_connect_data + conn_id;
+		pfsd_connect_rwlocks[conn_id].lock();
 		ptr->connect_id = 0;
+		pfsd_connect_rwlocks[conn_id].unlock();
 	}
 }
 
@@ -227,14 +244,12 @@ pfsd_chnl_close_begin(int32_t connect_id)
 
 	ptr = pfsd_connect_data + connect_id;
 	if (ptr->connect_id != 0) {
-		if (ptr->connect_refcnt == 0) {
-			assert (ptr->connect_op);
-			result = ptr->connect_op->chnl_close(ptr->connect_data,
-			    true);
-			ptr->connect_id = 0;
-		} else {
-			errno = EAGAIN;
-		}
+		pfsd_connect_rwlocks[connect_id].lock();
+		assert (ptr->connect_op);
+		result = ptr->connect_op->chnl_close(ptr->connect_data,
+		    true);
+		ptr->connect_id = 0;
+		pfsd_connect_rwlocks[connect_id].unlock();
 	} else {
 		errno = EINVAL;
 	}

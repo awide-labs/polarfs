@@ -55,7 +55,6 @@ typedef struct pfsd_chnl_op {
 
 typedef struct pfsd_connect_entry {
 	int32_t connect_id;
-	int32_t connect_refcnt;
 	int connect_mntid;
 	struct pfsd_chnl_op* connect_op;
 	void* connect_data;

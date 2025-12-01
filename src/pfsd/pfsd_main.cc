@@ -100,6 +100,8 @@ int main(int ac, char *av[])
 	fprintf(stderr, "starting pfsd[%d] %s\n", getpid(), pbdname);
 	pfsd_info("starting pfsd[%d] %s", getpid(), pbdname);
 
+	pfsd_chnl_init();
+
 	/* init communicate shm and inotify stuff */
 	if (pfsd_chnl_listen(PFSD_USER_PID_DIR, pbdname, g_option.o_workers, 
 	    g_shm_fname, g_option.o_shm_dir) != 0) {
@@ -144,6 +146,8 @@ int main(int ac, char *av[])
 	}
 
 	pfsd_destroy_workers(&g_workers);
+
+	pfsd_chnl_destroy();
 
 	pfsd_info("[pfsd]bye bye");
 	return 0;

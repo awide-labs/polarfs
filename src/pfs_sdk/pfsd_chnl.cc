@@ -22,13 +22,14 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
+#include "lib/dclcrwlock.h"
 #include "pfsd_common.h"
 #include "pfsd_chnl.h"
 #include "pfsd_chnl_impl.h"
 
-static pthread_mutex_t pfsd_connect_mutex = PTHREAD_MUTEX_INITIALIZER;
+static DCLCRWLock pfsd_connect_rwlock;
 
-static pfsd_connect_entry_t pfsd_connect_data[CHNL_MAX_CONN];
+static pfsd_connect_entry_t pfsd_connect_data;
 
 static pfsd_connect_entry_t *
 pfsd_connect_add_data(int32_t connect_id, void *data, pfsd_chnl_op *op)
@@ -38,10 +39,10 @@ pfsd_connect_add_data(int32_t connect_id, void *data, pfsd_chnl_op *op)
 		errno = EINVAL;
 		return result;
 	}
-	pthread_mutex_lock(&pfsd_connect_mutex);
+	pfsd_connect_rwlock.lock();
 
-	if (pfsd_connect_data[connect_id].connect_id == 0) {
-		result = &pfsd_connect_data[connect_id];
+	if (pfsd_connect_data.connect_id == 0) {
+		result = &pfsd_connect_data;
 		result->connect_id = connect_id;
 		result->connect_data = data; /* type chnl_ctx_shm_t for SHM */
 		result->connect_op = op;
@@ -49,7 +50,7 @@ pfsd_connect_add_data(int32_t connect_id, void *data, pfsd_chnl_op *op)
 		errno = EINVAL;
 	}
 
-	pthread_mutex_unlock(&pfsd_connect_mutex);
+	pfsd_connect_rwlock.unlock();
 	return  result;
 }
 
@@ -61,14 +62,12 @@ pfsd_connect_get_entry(int32_t connect_id)
 		errno = EINVAL;
 		return result;
 	}
-	pthread_mutex_lock(&pfsd_connect_mutex);
+	pfsd_connect_rwlock.lock_shared();
 
-	if(pfsd_connect_data[connect_id].connect_id == connect_id) {
-		result = &pfsd_connect_data[connect_id];
-		++result->connect_refcnt;
+	if(pfsd_connect_data.connect_id == connect_id) {
+		result = &pfsd_connect_data;
 	}
 
-	pthread_mutex_unlock(&pfsd_connect_mutex);
 	return  result;
 }
 
@@ -77,15 +76,14 @@ pfsd_connect_put_entry(int32_t connect_id)
 {
 	pfsd_connect_entry_t *result = NULL;
 	if (!pfsd_is_valid_connid(connect_id)) {
+		pfsd_connect_rwlock.unlock_shared();
 		errno = EINVAL;
 		return result;
 	}
-	pthread_mutex_lock(&pfsd_connect_mutex);
-	if(pfsd_connect_data[connect_id].connect_id == connect_id) {
-		result = &pfsd_connect_data[connect_id];
-		--result->connect_refcnt;
+	if(pfsd_connect_data.connect_id == connect_id) {
+		result = &pfsd_connect_data;
 	}
-	pthread_mutex_unlock(&pfsd_connect_mutex);
+	pfsd_connect_rwlock.unlock_shared();
 	return  result;
 }
 
@@ -113,6 +111,11 @@ pfsd_chnl_ctx_create(const char *name, void **ctx, pfsd_chnl_op_t **op, bool is_
 }
 
 /* client side */
+void pfsd_sdk_chnl_init()
+{
+	pfsd_connect_rwlock.init();
+}
+
 int32_t
 pfsd_chnl_connect(const char *svr_addr, const char *cluster, int timeout_ms,
     const char *pbdname, int host_id, int flags)
@@ -308,22 +311,18 @@ pfsd_chnl_close(int32_t connect_id, bool forced)
 		return -1;
 
 	pfsd_connect_entry_t *ptr = NULL;
-	pthread_mutex_lock(&pfsd_connect_mutex);
+	pfsd_connect_rwlock.lock();
 
-	ptr = pfsd_connect_data + connect_id;
+	ptr = &pfsd_connect_data;
 	if (ptr->connect_id != 0) {
-		if (ptr->connect_refcnt == 0) {
-			result = ptr->connect_op->chnl_close(ptr->connect_data,
-			    forced);
-			ptr->connect_id = 0;
-			ptr->connect_op->chnl_ctx_destroy(ptr->connect_data);
-		} else {
-			errno = EAGAIN;
-		}
+		result = ptr->connect_op->chnl_close(ptr->connect_data,
+		    forced);
+		ptr->connect_id = 0;
+		ptr->connect_op->chnl_ctx_destroy(ptr->connect_data);
 	} else {
 		errno = EINVAL;
 	}
-	pthread_mutex_unlock(&pfsd_connect_mutex);
+	pfsd_connect_rwlock.unlock();
 	return result;
 }
 

@@ -173,6 +173,8 @@ pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
 	s_mnt_flags = 0;
 	pfsd_sdk_file_init();
 
+	pfsd_sdk_chnl_init();
+
 	if (s_svraddr[0] == '\0') {
 		strncpy(s_svraddr, PFSD_USER_PID_DIR, PFS_MAX_PATHLEN);
 	}
