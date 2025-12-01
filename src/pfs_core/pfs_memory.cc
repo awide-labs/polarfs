@@ -33,7 +33,7 @@ typedef struct pfs_memtype {
 		std::atomic<int64_t>		mt_count_alloc;
 		std::atomic<int64_t>		mt_count_free;
 		char		mt_padding[64 - sizeof(ssize_t) * 2 - sizeof(int64_t) * 2];
-	} conters[MEMCOUNTER_SHARDS];
+	} counters[MEMCOUNTER_SHARDS];
 } pfs_memtype_t;
 
 #define	MEMTYPE_ENTRY(tag)	[tag] = { #tag, }
@@ -105,7 +105,7 @@ memtype_inc(int type, int count, size_t size)
 {
 	PFS_ASSERT(0 < type && type < M_NTYPE);
 
-	auto &cell = pfs_mem_type[type].conters[tls_memcounter_idx];
+	auto &cell = pfs_mem_type[type].counters[tls_memcounter_idx];
 	cell.mt_bytes_alloc.fetch_add(size, std::memory_order_relaxed);
 	cell.mt_count_alloc.fetch_add(count, std::memory_order_relaxed);
 }
@@ -115,7 +115,7 @@ memtype_dec(int type, size_t size)
 {
 	PFS_ASSERT(0 < type && type < M_NTYPE);
 
-	auto &cell = pfs_mem_type[type].conters[tls_memcounter_idx];
+	auto &cell = pfs_mem_type[type].counters[tls_memcounter_idx];
 	cell.mt_bytes_free.fetch_add(size, std::memory_order_relaxed);
 	cell.mt_count_free.fetch_add(1, std::memory_order_relaxed);
 }
@@ -199,7 +199,7 @@ pfs_mem_stat(admin_buf_t *ab)
 		calloc = cfree = 0;
 
 		for (int shard = 0; shard < MEMCOUNTER_SHARDS; shard++) {
-			auto &cell = pfs_mem_type[t].conters[shard];
+			auto &cell = pfs_mem_type[t].counters[shard];
 			balloc += cell.mt_bytes_alloc.load(std::memory_order_relaxed);
 			bfree += cell.mt_bytes_free.load(std::memory_order_relaxed);
 			calloc += cell.mt_count_alloc.load(std::memory_order_relaxed);

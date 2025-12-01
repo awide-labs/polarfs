@@ -83,8 +83,6 @@ int pfsd_umount_force(const char *pbdname);
 int pfsd_remount(const char *cluster, const char *pbdname, int hostid,
     int flags);
 
-int pfsd_abort_request(pid_t pid);
-
 int pfsd_mount_growfs(const char *pbdname);
 
 /* functions both for file and directory */
@@ -99,6 +97,9 @@ ssize_t pfsd_write(int fd, const void *buf, size_t len);
 
 ssize_t pfsd_pread(int fd, void *buf, size_t len, off_t off);
 ssize_t pfsd_pwrite(int fd, const void *buf, size_t len, off_t off);
+
+ssize_t pfsd_pread_zxc(int fd, uint64_t buf_id, off_t buf_off, size_t len, off_t off);
+ssize_t pfsd_pwrite_zxc(int fd, uint64_t buf_id, off_t buf_off, size_t len, off_t off);
 
 int pfsd_truncate(const char *pbdpath, off_t len);
 int pfsd_ftruncate(int fd, off_t len);
@@ -136,6 +137,18 @@ int pfsd_chown(const char *pbdpath, uid_t owner, gid_t group);
 
 unsigned long pfsd_meta_version_get();
 const char *pfsd_build_version_get();
+
+/* mem */
+struct pfsd_buf {
+	uint64_t buf_id;
+	off_t offs;
+	void *ptr;
+};
+int pfsd_alloc_shared_mem_pool(const char *name, size_t elem_size,
+			       size_t capacity, int num_local_lists,
+			       int local_list_limit);
+struct pfsd_buf pfsd_alloc(size_t total_mem);
+void pfsd_free(struct pfsd_buf buf);
 
 #ifdef __cplusplus
 }

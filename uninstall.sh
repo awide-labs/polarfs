@@ -41,6 +41,8 @@ rm ${INSTALL_BASE_DIR}/pfsd/bin/stop_pfsd.sh
 rm ${INSTALL_BASE_DIR}/pfsd/bin/mount_pfs_fuse.sh
 rm ${INSTALL_BASE_DIR}/pfsd/bin/umount_pfs_fuse.sh
 rm ${INSTALL_BASE_DIR}/pfsd/bin/clean_pfsd.sh
+rm ${INSTALL_BASE_DIR}/pfs_core/include/pfs_api.h
+rm ${INSTALL_BASE_DIR}/pfs_core/lib/libpfs.a
 rm /etc/init.d/pfsd_env
 rm /etc/polarfs.conf
 

@@ -21,25 +21,20 @@
 typedef struct {
 	/* Worker threads, same as num of channels */
 	int o_workers;
-	/* Worker thread usleep interval in us */
-	int o_usleep;
 	/* pbdname like 1-1 */
 	char o_pbdname[PFS_MAX_PBDLEN];
-	/* shm directory */
-	char o_shm_dir[PFS_MAX_PATHLEN];
 	/* config file */
 	char o_log_cfg[PFS_MAX_PATHLEN];
 	/* daemon mode */
 	int o_daemon;
-	/* if bind cpuset */
-	int o_affinity;
+	/* number of queues */
+	int o_queues;
 } pfsd_option_t;
 
 extern pfsd_option_t g_option;
 
 int pfsd_parse_option(int ac, char *av[]);
 void pfsd_usage(const char *prog);
-void pfsd_worker_usleep();
 
 #endif
 

@@ -15,6 +15,8 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/src/pfs_core/
     ${PROJECT_SOURCE_DIR}/src/pfs_core/lib/
     ${PROJECT_SOURCE_DIR}/src/trace/include/
+    ${PROJECT_BINARY_DIR}/third-party/folly/
+    ${PROJECT_SOURCE_DIR}/third-party/folly/
     )
 
 set(SRC_LIST
@@ -47,6 +49,7 @@ set(SRC_LIST
     pfs_version.cc
     pfs_chunk.cc
     pfs_avl.cc
+    lib/dclcrwlock.cc
 )
 
 # lib pfs
@@ -61,6 +64,8 @@ target_link_libraries(pfs
     pthread
     dl
     aio
+    glog
+    folly
     -Wl,--end-group
 )
 

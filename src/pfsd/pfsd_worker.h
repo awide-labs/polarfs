@@ -19,6 +19,8 @@
 #include <pthread.h>
 #include "pfsd_proto.h"
 #include "pfsd_common.h"
+#include "ipc/proto.h"
+#include "ipc/server.h"
 
 struct pfsd_iochannel;
 
@@ -37,38 +39,68 @@ typedef struct worker {
 extern worker_t *g_workers;
 extern int g_nworkers;
 
-worker_t *pfsd_create_workers(int nworkers);
-void pfsd_destroy_workers(worker_t **workers);
-
-void *pfsd_worker_routine(void *arg);
-
 extern pfsd_cpu_record_t *g_cpufile;
 extern int g_ncpu;
-/*Exec in main thread when start, find available core for worker threads */
-void *pfsd_worker_affinity_prepare(int nworkers);
-bool pfsd_worker_bind_cpuset(worker_t *worker);
-bool pfsd_is_busy_cpu(int cpuid, int ncpu);
 
-int pfsd_worker_handle_request(pfsd_iochannel *ch, int index);
+int pfsd_worker_handle_request(ipc::Server *ipc_server, uint64_t connId,
+			       ipc::Request *r);
 
-void pfsd_worker_handle_growfs(pfsd_iochannel *ch, int index, const growfs_request_t *req, growfs_response_t *rsp);
-void pfsd_worker_handle_rename(pfsd_iochannel *ch, int index, const rename_request_t *req, rename_response_t *rsp);
-void pfsd_worker_handle_open(pfsd_iochannel *ch, int index, const open_request_t *req, open_response_t *rsp);
-void pfsd_worker_handle_read(pfsd_iochannel *ch, int index, const read_request_t *req, read_response_t *rsp);
-void pfsd_worker_handle_write(pfsd_iochannel *ch, int index, const write_request_t *req, write_response_t *rsp);
-void pfsd_worker_handle_truncate(pfsd_iochannel *ch, int index, const truncate_request_t *req, truncate_response_t *rsp);
-void pfsd_worker_handle_ftruncate(pfsd_iochannel *ch, int index, const ftruncate_request_t *req, ftruncate_response_t *rsp);
-void pfsd_worker_handle_unlink(pfsd_iochannel *ch, int index, const unlink_request_t *req, unlink_response_t *rsp);
-void pfsd_worker_handle_stat(pfsd_iochannel *ch, int index, const stat_request_t *req, stat_response_t *rsp);
-void pfsd_worker_handle_fstat(pfsd_iochannel *ch, int index, const fstat_request_t *req, fstat_response_t *rsp);
-void pfsd_worker_handle_fallocate(pfsd_iochannel *ch, int index, const fallocate_request_t *req, fallocate_response_t *rsp);
-void pfsd_worker_handle_chdir(pfsd_iochannel *ch, int index, const chdir_request_t *req, chdir_response_t *rsp);
-void pfsd_worker_handle_mkdir(pfsd_iochannel *ch, int index, const mkdir_request_t *req, mkdir_response_t *rsp);
-void pfsd_worker_handle_rmdir(pfsd_iochannel *ch, int index, const rmdir_request_t *req, rmdir_response_t *rsp);
-void pfsd_worker_handle_opendir(pfsd_iochannel *ch, int index, const opendir_request_t *req, opendir_response_t *rsp);
-void pfsd_worker_handle_readdir(pfsd_iochannel *ch, int index, const readdir_request_t *req, readdir_response_t *rsp);
-void pfsd_worker_handle_access(pfsd_iochannel *ch, int index, const access_request_t *req, access_response_t *rsp);
-void pfsd_worker_handle_lseek(pfsd_iochannel *ch, int index, const lseek_request_t *req, lseek_response_t *rsp);
+void pfsd_worker_handle_growfs(ipc::Server *ipc_server, uint64_t connId,
+			       ipc::Request *r, const growfs_request_t *req,
+			       growfs_response_t *rsp);
+void pfsd_worker_handle_rename(ipc::Server *ipc_server, uint64_t connId,
+			       ipc::Request *r, const rename_request_t *req,
+			       rename_response_t *rsp);
+void pfsd_worker_handle_open(ipc::Server *ipc_server, uint64_t connId,
+			     ipc::Request *r, const open_request_t *req,
+			     open_response_t *rsp);
+void pfsd_worker_handle_read(ipc::Server *ipc_server, uint64_t connId,
+			     ipc::Request *r, const read_request_t *req,
+			     read_response_t *rsp);
+void pfsd_worker_handle_write(ipc::Server *ipc_server, uint64_t connId,
+			      ipc::Request *r, const write_request_t *req,
+			      write_response_t *rsp);
+void pfsd_worker_handle_truncate(ipc::Server *ipc_server, uint64_t connId,
+				 ipc::Request *r, const truncate_request_t *req,
+				 truncate_response_t *rsp);
+void pfsd_worker_handle_ftruncate(ipc::Server *ipc_server, uint64_t connId,
+				  ipc::Request *r,
+				  const ftruncate_request_t *req,
+				  ftruncate_response_t *rsp);
+void pfsd_worker_handle_unlink(ipc::Server *ipc_server, uint64_t connId,
+			       ipc::Request *r, const unlink_request_t *req,
+			       unlink_response_t *rsp);
+void pfsd_worker_handle_stat(ipc::Server *ipc_server, uint64_t connId,
+			     ipc::Request *r, const stat_request_t *req,
+			     stat_response_t *rsp);
+void pfsd_worker_handle_fstat(ipc::Server *ipc_server, uint64_t connId,
+			      ipc::Request *r, const fstat_request_t *req,
+			      fstat_response_t *rsp);
+void pfsd_worker_handle_fallocate(ipc::Server *ipc_server, uint64_t connId,
+				  ipc::Request *r,
+				  const fallocate_request_t *req,
+				  fallocate_response_t *rsp);
+void pfsd_worker_handle_chdir(ipc::Server *ipc_server, uint64_t connId,
+			      ipc::Request *r, const chdir_request_t *req,
+			      chdir_response_t *rsp);
+void pfsd_worker_handle_mkdir(ipc::Server *ipc_server, uint64_t connId,
+			      ipc::Request *r, const mkdir_request_t *req,
+			      mkdir_response_t *rsp);
+void pfsd_worker_handle_rmdir(ipc::Server *ipc_server, uint64_t connId,
+			      ipc::Request *r, const rmdir_request_t *req,
+			      rmdir_response_t *rsp);
+void pfsd_worker_handle_opendir(ipc::Server *ipc_server, uint64_t connId,
+				ipc::Request *r, const opendir_request_t *req,
+				opendir_response_t *rsp);
+void pfsd_worker_handle_readdir(ipc::Server *ipc_server, uint64_t connId,
+				ipc::Request *r, const readdir_request_t *req,
+				readdir_response_t *rsp);
+void pfsd_worker_handle_access(ipc::Server *ipc_server, uint64_t connId,
+			       ipc::Request *r, const access_request_t *req,
+			       access_response_t *rsp);
+void pfsd_worker_handle_lseek(ipc::Server *ipc_server, uint64_t connId,
+			      ipc::Request *r, const lseek_request_t *req,
+			      lseek_response_t *rsp);
 
 /*for debug : return current processing request's pid  */
 pid_t pfsd_worker_current_processing_pid();

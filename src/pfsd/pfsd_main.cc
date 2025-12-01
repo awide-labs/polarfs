@@ -13,19 +13,20 @@
  * limitations under the License.
  */
 
+#include "ipc/shm.h"
 #include <stdio.h>
 #include <errno.h>
 #include <signal.h>
+#include <vector>
 
 #include "pfsd_common.h"
-#include "pfsd_shm.h"
 #include "pfsd_worker.h"
 #include "pfsd_option.h"
 
 #include "pfs_trace.h"
 #include "pfsd_zlog.h"
 
-#include "pfsd_chnl.h"
+#include "ipc/server.h"
 
 static void
 signal_handler(int num)
@@ -40,6 +41,45 @@ reload_handler(int num)
 
 /* used for libpfs logger */
 zlog_category_t *original_zlog_cat = NULL;
+
+static void
+handle_request(ipc::RequestPtr rp, ipc::Server *server)
+{
+	auto [r, lk] = server->getPtrWithLock<ipc::Request>(
+		rp.connectionId, rp.memBufId, rp.offset);
+	if (r == nullptr) {
+		/* request not found means that the request issuer already
+		disconnected (or crashed) and it's mmap'ed buffers cleaned up. */
+		return;
+	}
+	pfsd_worker_handle_request(server, rp.connectionId, r);
+	sem_post(&r->sem);
+}
+
+static void
+queue_worker(ipc::Queue *q, std::vector<ipc::Queue *> other_queues,
+	     ipc::Server *server, int worker_id)
+{
+	int idx = 0;
+	while (!g_stop) {
+		ipc::RequestPtr rp;
+		if (q->try_pop(rp)) {
+			handle_request(rp, server);
+			continue;
+		}
+		int count = other_queues.size();
+		while (count > 0) {
+			if (other_queues[idx]->try_pop(rp)) {
+				handle_request(rp, server);
+				break;
+			}
+			count--;
+			idx = (idx + 1) % other_queues.size();
+		}
+		q->pop(rp);
+		handle_request(rp, server);
+	}
+}
 
 int main(int ac, char *av[])
 {
@@ -100,54 +140,46 @@ int main(int ac, char *av[])
 	fprintf(stderr, "starting pfsd[%d] %s\n", pfs_getpid(), pbdname);
 	pfsd_info("starting pfsd[%d] %s", pfs_getpid(), pbdname);
 
-	pfsd_chnl_init();
+	std::vector<std::unique_ptr<ipc::Queue> > queues;
+	std::vector<ipc::Queue *> queue_pointers;
+	folly::EventBase evb;
+	auto server = std::make_unique<ipc::Server>(evb, pbdname);
 
-	/* init communicate shm and inotify stuff */
-	if (pfsd_chnl_listen(PFSD_USER_PID_DIR, pbdname, g_option.o_workers, 
-	    g_shm_fname, g_option.o_shm_dir) != 0) {
-		pfsd_error("[pfsd]pfsd_chnl_listen %s failed, errno %d", 
-		    PFSD_USER_PID_DIR, errno);
-		return -1;
+	g_nworkers = g_option.o_workers;
+
+	int n_queues = g_option.o_queues;
+	if (n_queues <= 0) {
+		n_queues = std::thread::hardware_concurrency();
 	}
 
-	/* notify worker start */
-	for (int i = 0; i < g_option.o_workers; ++i) {
-		worker_t *wk = g_workers + i;
-		sem_post(&wk->w_sem);
+	for (int i = 0; i < n_queues; i++) {
+		const size_t capacity = 1024;
+		size_t memSize = ipc::Queue::memorySizeForCapacity(capacity);
+		auto memfd = std::make_unique<ipc::MemFd>(
+			"queue-" + std::to_string(i), memSize);
+		auto queue =
+			ipc::makeQueue(memfd->buf(), memfd->size(), capacity);
+
+		server->addQueue(std::move(memfd));
+		queue_pointers.push_back(queue.get());
+		queues.push_back(std::move(queue));
 	}
 
-	int windex = 0;
-	while (!g_stop) {
-		windex = (windex + 1) % g_option.o_workers;
-		/* recycle zombie */
-		for (int ci = 0; ci < g_workers[windex].w_nch; ++ci) {
-			pfsd_iochannel_t *ch = g_workers[windex].w_channels[ci];
-			pfsd_shm_recycle_request(ch);
-		}
+  std::vector<std::thread> workers;
+  int i = 0, nq = 0;
+  for (i = 0; i < g_nworkers; i++) {
+	  workers.emplace_back(queue_worker, queue_pointers[nq % n_queues],
+			       queue_pointers, server.get(), i);
+	  nq++;
+  }
 
-		if (g_workers[windex].w_cr != NULL)
-			g_workers[windex].w_cr->cr_ts = time(NULL);
+  server->start();
 
-		sleep(10);
-	}
+  for (auto &worker : workers) {
+	  worker.join();
+  }
 
-	/* exit */
-	for (int i = 0; i < g_nworkers; ++i) {
-		if (g_workers == NULL)
-			break;
-
-		if (g_workers[i].w_nch == 0)
-			break;
-
-		sem_post(&g_workers[i].w_sem);
-
-		pfsd_info("[pfsd]pthread_join %d", i);
-		pthread_join(g_workers[i].w_tid, NULL);
-	}
-
-	pfsd_destroy_workers(&g_workers);
-
-	pfsd_chnl_destroy();
+  return 0;
 
 	pfsd_info("[pfsd]bye bye");
 	return 0;

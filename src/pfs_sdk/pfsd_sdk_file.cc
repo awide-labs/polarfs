@@ -33,7 +33,7 @@ bool pfsd_writable(int flags)
 
 
 static char work_dir[PFS_MAX_PATHLEN];
-static pthread_rwlock_t sdk_work_dir_rwlock;
+static DCLCRWLock sdk_work_dir_rwlock;
 
 static int fdtbl_free_last = -1;
 static pfsd_file_t *fdtbl[PFSD_MAX_NFD];
@@ -88,13 +88,14 @@ void pfsd_sdk_file_init()
 	}
 	PFSD_ASSERT(fdtbl_nopen == 0);
 
-	pthread_rwlock_init(&sdk_work_dir_rwlock, NULL);
+	sdk_work_dir_rwlock.init();
 
 	fdtbl_rwlock.init();
 }
 
 void pfsd_sdk_file_destroy()
 {
+	sdk_work_dir_rwlock.destroy();
 	fdtbl_rwlock.destroy();
 }
 
@@ -262,7 +263,7 @@ pfsd_dir_xgetwd(char *buf, size_t len)
 		len = PFS_MAX_PATHLEN;
 
 	int err = 0;
-	pthread_rwlock_rdlock(&sdk_work_dir_rwlock);
+	sdk_work_dir_rwlock.lock_shared();
 	if (work_dir[0] == '\0') {
 		buf[0] = '\0';
 		err = -ENOENT;
@@ -275,7 +276,7 @@ pfsd_dir_xgetwd(char *buf, size_t len)
 			buf[wlen] = '\0';
 		}
 	}
-	pthread_rwlock_unlock(&sdk_work_dir_rwlock);
+	sdk_work_dir_rwlock.unlock_shared();
 
 	return err;
 }
@@ -288,10 +289,10 @@ pfsd_dir_xsetwd(const char *path, size_t len)
 	if (len >= PFS_MAX_PATHLEN)
 		return ENAMETOOLONG;
 
-	pthread_rwlock_wrlock(&sdk_work_dir_rwlock);
+	sdk_work_dir_rwlock.lock();
 	memcpy(work_dir, path, len);
 	work_dir[len] = '\0';
-	pthread_rwlock_unlock(&sdk_work_dir_rwlock);
+	sdk_work_dir_rwlock.unlock();
 
 	return err;
 }

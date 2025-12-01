@@ -16,6 +16,9 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/src/pfs_sdk/
     ${PROJECT_SOURCE_DIR}/src/pfs_core/
     ${PROJECT_SOURCE_DIR}/src/trace/include/
+    ${PROJECT_BINARY_DIR}/third-party/folly/
+    ${PROJECT_SOURCE_DIR}/third-party/folly/
+    ${PROJECT_SOURCE_DIR}/src/
 )
 
 link_directories(
@@ -23,13 +26,10 @@ link_directories(
 )
 
 SET(SRC_LIST_PFSD_SDK pfsd_common.cc
-                      pfsd_chnl.cc
-                      pfsd_chnl_shm.cc
                       pfsd_memory.cc
                       pfsd_sdk_file.cc
                       pfsd_sdk_mount.cc
                       pfsd_sdk.cc
-                      pfsd_shm.cc
                       ../pfs_core/lib/dclcrwlock.cc
     )
 # objects
@@ -57,17 +57,4 @@ set_property(TARGET pfsd_test PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(pfsd; rt;pthread;dl)
 
-
-# pfsd shm tool
-add_executable(pfsd_shm_tool
-    pfsd_shm_tool.cc
-    )
-
-add_dependencies(pfsd_shm_tool
-    pfsd
-)
-
-target_link_libraries(pfsd_shm_tool; pfsd;rt;pthread)
-
 SET_TARGET_PROPERTIES(pfsd PROPERTIES LINKER_LANGUAGE CXX)
-SET_TARGET_PROPERTIES(pfsd_shm_tool PROPERTIES LINKER_LANGUAGE CXX)

@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <mutex>
+#include <random>
 #include <string.h>
 #include <assert.h>
 #include <sys/file.h>
@@ -22,9 +23,9 @@
 #include "pfsd_common.h"
 #include "pfsd_proto.h"
 
-static std::mutex s_pid_init_mutex;
-
 pid_t g_pid = -1;
+
+static std::mutex s_pid_init_mutex;
 
 pid_t
 pfsd_getpid_slow()
@@ -172,3 +173,11 @@ const char mon_name[][4] = {
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 };
 
+int
+random_int_uniform(int n)
+{
+	thread_local std::mt19937 generator{ static_cast<unsigned int>(
+		reinterpret_cast<uintptr_t>(pthread_self())) };
+	std::uniform_int_distribution<int> distribution(0, n - 1);
+	return distribution(generator);
+}

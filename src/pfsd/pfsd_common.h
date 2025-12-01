@@ -245,5 +245,8 @@ pfsd_abort(const char *action, const char *cond, const char *func, int line)
 /* EOF directory */
 #define PFSD_DIR_END 1
 
+/* Generate uniformly distributed random integer in range [0, n) */
+int random_int_uniform(int n);
+
 #endif
 

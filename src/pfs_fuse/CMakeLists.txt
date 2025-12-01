@@ -15,6 +15,9 @@ include_directories(
         ${PROJECT_SOURCE_DIR}/src/pfs_fuse/
 	${PROJECT_SOURCE_DIR}/src/pfs_sdk/
 	${PROJECT_SOURCE_DIR}/src/trace/include/
+    ${PROJECT_BINARY_DIR}/folly/
+    ${PROJECT_SOURCE_DIR}/folly/
+    ${PROJECT_SOURCE_DIR}/src/
 )
 
 link_directories(
@@ -48,6 +51,8 @@ target_link_libraries(pfs-fuse
     pthread
     fuse
     -Wl,--end-group
+    glog
+    folly
 )
 
 add_dependencies(pfs-fuse

@@ -25,17 +25,16 @@
 
 #include "pfsd_common.h"
 #include "pfsd_proto.h"
-#include "pfsd_shm.h"
 #include "pfsd_sdk_file.h"
 #include "pfsd_sdk.h"
 #include "pfsd_sdk_mount.h"
 
-#include "pfsd_chnl.h"
-#include "pfsd_chnl_shm.h"
+#include "ipc/client.h"
 
 /* init once */
 static pthread_mutex_t s_init_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int s_inited = 0;
+static int s_n_custom_mem_pools = 0;
 
 /* connect id */
 static int s_connid = -1;
@@ -112,6 +111,8 @@ pfsd_set_connect_timeout(int timeout_ms)
 	s_timeout_ms = timeout_ms;
 }
 
+static ipc::Session *client = nullptr;
+
 static void
 pfsd_mount_atfork_child_init()
 {
@@ -123,6 +124,8 @@ pfsd_mount_atfork_child_init()
 void
 pfsd_atfork_child_post()
 {
+	client->atforkChild();
+
 	/* init rand seed for each process */
 
 	struct timeval now;
@@ -133,12 +136,71 @@ pfsd_atfork_child_post()
 	pfsd_mount_atfork_child_init();
 }
 
+struct MemPoolParams {
+  size_t size;
+  size_t capacity;
+  size_t numLocalLists;
+  size_t localListLimit;
+};
+
+struct req_and_buf_info {
+	using alloc_result = ipc::SharedMemoryPools::AllocResult;
+	ipc::RequestPtr rp;
+	alloc_result req_alloc_result;
+	alloc_result buf_alloc_result;
+	void *buf;
+};
+
+static inline int
+pfsd_alloc_req_and_buf(req_and_buf_info &r, size_t buflen, ipc::Request **req,
+		       void **buf)
+{
+	if (!client->allocRequest(r.req_alloc_result)) {
+		return ENOMEM;
+	}
+
+	r.rp.memBufId = r.req_alloc_result.bufferId;
+	r.rp.offset = r.req_alloc_result.offset;
+	r.rp.size = sizeof(ipc::Request);
+
+	*req = (ipc::Request *)r.req_alloc_result.ptr;
+
+	if (buflen > 0) {
+		if (!client->alloc(buflen, r.buf_alloc_result)) {
+			client->freeRequest(r.req_alloc_result);
+			return ENOMEM;
+		}
+
+		(*req)->memBufId = r.buf_alloc_result.bufferId;
+		(*req)->offset = r.buf_alloc_result.offset;
+		(*req)->size = r.buf_alloc_result.size;
+
+		*buf = r.buf_alloc_result.ptr;
+	} else {
+		r.buf_alloc_result.ptr = nullptr;
+	}
+
+	return 0;
+}
+
+static inline void
+pfsd_free_req_and_buf(req_and_buf_info &r)
+{
+	if (r.buf_alloc_result.ptr != nullptr) {
+		client->free(r.buf_alloc_result);
+	}
+	client->freeRequest(r.req_alloc_result);
+}
+
 int
 pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
-    const char *cluster, const char *pbdname, int host_id, int flags)
+	      const char *cluster, const char *pbdname, int host_id, int flags)
 {
-
-	pfsd_chnl_shm_client_init(); /* ! forced link pfsd_chnl_shm.o in libpfsd.a */
+	std::vector<MemPoolParams> defaultMemPoolParams = {
+		{ 4, 16384, 128, 8 }, { 8, 8192, 64, 8 },  { 16, 4096, 64, 4 },
+		{ 64, 1024, 32, 4 },  { 256, 256, 32, 4 }, { 1024, 64, 8, 2 },
+		{ 4096, 16, 8, 2 }
+	};
 
 	int conn_id;
 	void *mp = NULL;
@@ -174,7 +236,10 @@ pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
 	s_mnt_flags = 0;
 	pfsd_sdk_file_init();
 
-	pfsd_sdk_chnl_init();
+	if (client == nullptr) {
+		client = new ipc::Session;
+	}
+	client->setPbdname(pbdname);
 
 	if (s_svraddr[0] == '\0') {
 		strncpy(s_svraddr, PFSD_USER_PID_DIR, PFS_MAX_PATHLEN);
@@ -190,15 +255,44 @@ pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
 		goto failed;
 	}
 
-	conn_id = pfsd_chnl_connect(svraddr, cluster, timeout_ms, pbdname, host_id, flags);
-	PFSD_CLIENT_LOG("pfsd_chnl_connect %s", conn_id > 0 ? "success" : "failed");
-	if (conn_id <= 0)
-		goto failed;
+	if (s_n_custom_mem_pools == 0) {
+		for (auto param : defaultMemPoolParams) {
+			auto mempool =
+				std::make_unique<ipc::SharedIndexedMemPool<> >(
+					std::string("mempool-") +
+						std::to_string(param.size),
+					param.size * 1024, param.capacity,
+					param.numLocalLists,
+					param.localListLimit);
+			if (!client->registerMemPool(std::move(mempool),
+						     false)) {
+				client->shutdown();
+				return -1;
+			}
+		}
+	}
+
+	{
+		auto mempool = std::make_unique<ipc::SharedIndexedMemPool<> >(
+			std::string("mempool-req"), sizeof(ipc::Request), 2048,
+			32, 32);
+		mempool->zeroInit();
+		if (!client->registerMemPool(std::move(mempool), true)) {
+			client->shutdown();
+			return -1;
+		}
+	}
+
+  if (!client->start(cluster, host_id, flags, timeout_ms)) {
+	  client->shutdown();
+	  return -1;
+  }
 
 	strncpy(s_pbdname, pbdname, sizeof(s_pbdname));
 	s_mnt_flags = flags;
 	s_mnt_hostid = host_id;
 
+	conn_id = client->connectionId();
 	s_connid = conn_id;
 	s_mount_local_info = mp;
 
@@ -228,16 +322,6 @@ failed:
 	return -1;
 }
 
-#define CHECK_STALE(rsp) do {\
-	if (rsp->error == ESTALE) { \
-		PFSD_CLIENT_LOG("Stale request, rsp type %d!!!", rsp->type); \
-		rsp->error = 0; \
-		pfsd_chnl_update_meta(s_connid, req->mntid); \
-		pfsd_chnl_buffer_free(s_connid, req, rsp, NULL, pfsd_tolong(ch)); \
-		goto retry;\
-	} \
-} while(0)\
-
 int
 pfsd_mount(const char *cluster, const char *pbdname, int hostid, int flags)
 {
@@ -253,8 +337,8 @@ pfsd_umount_force(const char *pbdname)
 	if (s_mount_local_info)
 		pfs_umount_prepare(pbdname, s_mount_local_info);
 
-	int err = pfsd_chnl_close(s_connid, true);
-	if (err == 0) {
+	bool success = client->shutdown();
+	if (success) {
 		RESET_CONN();
 
 		if (s_mount_local_info) {
@@ -266,7 +350,7 @@ pfsd_umount_force(const char *pbdname)
 		PFSD_CLIENT_ELOG("umount failed for %s", pbdname);
 	}
 
-	return err;
+	return 0;
 }
 
 int
@@ -278,8 +362,8 @@ pfsd_umount(const char *pbdname)
 	if (s_mount_local_info)
 		pfs_umount_prepare(pbdname, s_mount_local_info);
 
-	int err = pfsd_chnl_close(s_connid, false);
-	if (err == 0) {
+	bool success = client->shutdown();
+	if (success) {
 		RESET_CONN();
 
 		if (s_mount_local_info) {
@@ -289,9 +373,10 @@ pfsd_umount(const char *pbdname)
 		PFSD_CLIENT_LOG("umount success for %s", pbdname);
 	} else {
 		PFSD_CLIENT_ELOG("umount failed for %s", pbdname);
+		return -1;
 	}
 
-	return err;
+	return 0;
 }
 
 int
@@ -323,9 +408,8 @@ pfsd_remount(const char *cluster, const char *pbdname, int hostid, int flags)
 		PFSD_CLIENT_ELOG("pfs_remount_prepare failed, maybe hostid %d used, err %s", hostid, strerror(errno));
 		goto failed;
 	}
-	/* reconnect, use same connid */
-	res = pfsd_chnl_reconnect(s_connid, cluster, s_remount_timeout_ms, pbdname, hostid, flags);
-	if (res == 0) {
+
+	if (!client->restart(cluster, hostid, flags, s_remount_timeout_ms)) {
 		s_mnt_flags = flags;
 		free(s_mount_local_info);
 		s_mount_local_info = mp;
@@ -346,48 +430,33 @@ failed:
 }
 
 int
-pfsd_abort_request(pid_t pid)
-{
-	if (s_connid <= 0) {
-		PFSD_CLIENT_ELOG("SDK not inited successful\n");
-		errno = ENODEV;
-		return -1;
-	}
-	return pfsd_chnl_abort(s_connid, pid);
-}
-
-int
 pfsd_mount_growfs(const char *pbdname)
 {
 	CHECK_MOUNT(pbdname);
 
 	int err = 0;
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	pfsd_response_t *rsp = NULL;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, 0, (void**)&req, 0, (void**)&rsp,
-	    NULL, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	req_and_buf_info r;
+	ipc::Request *req;
+
+	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
+		errno = err;
 		return -1;
 	}
 
-	PFSD_CLIENT_LOG("growfs for %s", pbdname);
-
 	/* fill request */
 	req->type = PFSD_REQUEST_GROWFS;
-	strncpy(req->g_req.g_pbd, pbdname, PFS_MAX_PBDLEN);
+	strncpy(req->req.g_req.g_pbd, pbdname, PFS_MAX_PBDLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, 0, rsp, 0, NULL, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->error != 0) {
-		errno = rsp->error;
+	if (req->rsp.g_rsp.error != 0) {
+		errno = req->rsp.g_rsp.error;
 		err = -1;
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, NULL, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return err;
 }
 
@@ -435,16 +504,13 @@ pfsd_rename(const char *oldpbdpath, const char *newpbdpath)
 	CHECK_MOUNT(newpbd);
 	CHECK_WRITABLE();
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	pfsd_response_t *rsp = NULL;
-	int64_t iolen = 2 * PFS_MAX_PATHLEN;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, iolen, (void**)&req, 0, (void**)&rsp,
-	    (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, 2 * PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
 
@@ -454,17 +520,16 @@ retry:
 	strncpy((char*)buf, oldpath, PFS_MAX_PATHLEN);
 	strncpy((char*)buf+PFS_MAX_PATHLEN, newpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, iolen,
-	    rsp, 0, buf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->error != 0) {
-		PFSD_CLIENT_ELOG("rename %s -> %s error: %d", oldpbdpath, newpbdpath, rsp->error);
-		errno = rsp->error;
+	if (req->rsp.re_rsp.error != 0) {
+		PFSD_CLIENT_ELOG("rename %s -> %s error: %d", oldpbdpath, newpbdpath, req->rsp.re_rsp.error);
+		errno = req->rsp.re_rsp.error;
 		err = -1;
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return err;
 }
 
@@ -502,48 +567,44 @@ pfsd_open(const char *pbdpath, int flags, mode_t mode)
 	}
 	file->f_flags = flags;
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	pfsd_response_t *rsp = NULL;
-	unsigned char *buf = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
-		pfsd_close_file(file);
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
 
 	/* fill request */
 	req->type = PFSD_REQUEST_OPEN;
-	req->o_req.o_flags = flags;
-	req->o_req.o_mode = mode;
+	req->req.o_req.o_flags = flags;
+	req->req.o_req.o_mode = mode;
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN, rsp, 0, buf,
-	    pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	file->f_inode = rsp->o_rsp.o_ino;
-	file->f_common_pl = rsp->common_pl_rsp;
+	file->f_inode = req->rsp.o_rsp.o_ino;
+	file->f_common_pl = req->rsp.o_rsp.common_pl_rsp;
 	if (file->f_inode == -1) {
 		pfsd_close_file(file);
-		errno = rsp->error;
+		errno = req->rsp.o_rsp.error;
 		fd = -1;
 		if (errno != ENOENT)
 			PFSD_CLIENT_ELOG("open %s failed %s", pbdpath,
 			    strerror(errno));
 	} else {
-		file->f_offset = rsp->o_rsp.o_off;
+		file->f_offset = req->rsp.o_rsp.o_off;
 
 		if (flags & O_CREAT)
 			PFSD_CLIENT_LOG("open %s with inode %ld, fd %d",
 			    pbdpath, file->f_inode, fd);
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
 
 	if (fd < 0)
 		return -1;
@@ -609,12 +670,6 @@ pfsd_pread(int fd, void *buf, size_t len, off_t off)
 		len = PFSD_MAX_IOSIZE;
 	}
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *rbuf = NULL;
-	ssize_t ss = -1;
-	pfsd_response_t *rsp = NULL;
-
 	pfsd_file_t *file = NULL;
 
 	PFSD_SDK_GET_FILE(fd);
@@ -629,31 +684,31 @@ pfsd_pread(int fd, void *buf, size_t len, off_t off)
 		return -1;
 	}
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, 0, (void**)&req, len,
-	    (void**)&rsp, (void**)&rbuf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
-		pfsd_put_file(file);
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *rbuf;
+
+	if ((err = pfsd_alloc_req_and_buf(r, len, &req, (void **)&rbuf)) != 0) {
+		errno = err;
 		return -1;
 	}
 
 	/* fill request */
 	req->type = PFSD_REQUEST_READ;
-	req->r_req.r_ino = file->f_inode;
-	req->r_req.r_len = len;
-	req->r_req.r_off = off2;
-	req->common_pl_req = file->f_common_pl;
+	req->req.r_req.r_ino = file->f_inode;
+	req->req.r_req.r_len = len;
+	req->req.r_req.r_off = off2;
+	req->req.r_req.common_pl_req = file->f_common_pl;
 
-	pfsd_chnl_send_recv(s_connid, req, 0, rsp, len, buf, pfsd_tolong(ch),
-	    0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->r_rsp.r_len > 0)
-		memcpy(buf, rbuf, rsp->r_rsp.r_len);
+	if (req->rsp.r_rsp.r_len > 0)
+		memcpy(buf, rbuf, req->rsp.r_rsp.r_len);
 
-	ss = rsp->r_rsp.r_len;
+	ssize_t ss = req->rsp.r_rsp.r_len;
 	if (ss < 0) {
-		errno = rsp->error;
+		errno = req->rsp.r_rsp.error;
 		PFSD_CLIENT_ELOG("pread fd %d ino %ld error: %s", fd,
 		    file->f_inode, strerror(errno));
 	} else {
@@ -662,7 +717,9 @@ retry:
 	}
 
 	pfsd_put_file(file);
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+
+	pfsd_free_req_and_buf(r);
+
 	return ss;
 }
 
@@ -679,12 +736,6 @@ pfsd_pwrite(int fd, const void *buf, size_t len, off_t off)
 		errno = EINVAL;
 		return -1;
 	}
-
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *wbuf = NULL;
-	pfsd_response_t *rsp = NULL;
-	ssize_t ss = -1;
 
 	pfsd_file_t *file = NULL;
 
@@ -716,33 +767,31 @@ pfsd_pwrite(int fd, const void *buf, size_t len, off_t off)
 		return -1;
 	}
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, len, (void**)&req, 0,
-	    (void**)&rsp, (void**)&wbuf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
-		pfsd_put_file(file);
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *wbuf;
+
+	if ((err = pfsd_alloc_req_and_buf(r, len, &req, (void **)&wbuf)) != 0) {
+		errno = err;
 		return -1;
 	}
 
 	/* fill request */
 	req->type = PFSD_REQUEST_WRITE;
-	req->w_req.w_ino = file->f_inode;
-	req->w_req.w_len = len;
-	req->w_req.w_off = off2;
-	req->w_req.w_flags = file->f_flags;
-	req->common_pl_req = file->f_common_pl;
+	req->req.w_req.w_ino = file->f_inode;
+	req->req.w_req.w_len = len;
+	req->req.w_req.w_off = off2;
+	req->req.w_req.w_flags = file->f_flags;
+	req->req.w_req.common_pl_req = file->f_common_pl;
 
 	memcpy(wbuf, buf, len);
 
-	pfsd_chnl_send_recv(s_connid, req, len, rsp, 0, wbuf, pfsd_tolong(ch),
-	    0);
+	client->executeRequest(r.rp, req);
 
-	if ((file->f_flags & O_APPEND) == 0)
-		CHECK_STALE(rsp);
-
-	ss = rsp->w_rsp.w_len;
+	ssize_t ss = req->rsp.w_rsp.w_len;
 	if (ss < 0) {
-		errno = rsp->error;
+		errno = req->rsp.w_rsp.error;
 		PFSD_CLIENT_ELOG("pwrite fd %d ino %ld error: %s", fd,
 		    file->f_inode, strerror(errno));
 	} else {
@@ -750,11 +799,152 @@ retry:
 			__sync_add_and_fetch(&file->f_offset, ss);
 		}
 		if ((file->f_flags & O_APPEND) != 0 && OFFSET_FILE_POS == off)
-			file->f_offset = rsp->w_rsp.w_file_size;
+			file->f_offset = req->rsp.w_rsp.w_file_size;
 	}
 
 	pfsd_put_file(file);
-	pfsd_chnl_buffer_free(s_connid, req, rsp, wbuf, pfsd_tolong(ch));
+
+	pfsd_free_req_and_buf(r);
+
+	return ss;
+}
+
+ssize_t pfsd_pread_zxc(int fd, uint64_t buf_id, off_t buf_offs, size_t len, off_t off)
+{
+	if (len > PFSD_MAX_IOSIZE) {
+		/* may shorten read */
+		PFSD_CLIENT_LOG("pread len %lu is too big for fd %d, cast to 4MB.", len, fd);
+		len = PFSD_MAX_IOSIZE;
+	}
+
+	pfsd_file_t *file = NULL;
+
+	PFSD_SDK_GET_FILE(fd);
+
+	off_t off2 = off;
+	if (off == OFFSET_FILE_POS)
+		off2 = file->f_offset;
+
+	if (off2 < 0) {
+		errno = EINVAL;
+		pfsd_put_file(file);
+		return -1;
+	}
+
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+
+	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
+		errno = err;
+		return -1;
+	}
+
+	char *rbuf = (char*)client->getPtrFromSharedBuf(buf_id, buf_offs);
+
+	req->memBufId = buf_id;
+	req->offset = buf_offs;
+	req->size = len;
+
+	/* fill request */
+	req->type = PFSD_REQUEST_READ;
+	req->req.r_req.r_ino = file->f_inode;
+	req->req.r_req.r_len = len;
+	req->req.r_req.r_off = off2;
+	req->req.r_req.common_pl_req = file->f_common_pl;
+
+	client->executeRequest(r.rp, req);
+
+	ssize_t ss = req->rsp.r_rsp.r_len;
+	if (ss < 0) {
+		errno = req->rsp.r_rsp.error;
+		PFSD_CLIENT_ELOG("pread fd %d ino %ld error: %s", fd,
+		    file->f_inode, strerror(errno));
+		abort();
+	} else {
+		if (off == -1)
+			__sync_add_and_fetch(&file->f_offset, ss);
+	}
+
+	pfsd_put_file(file);
+
+	pfsd_free_req_and_buf(r);
+
+	return ss;
+}
+
+ssize_t pfsd_pwrite_zxc(int fd, uint64_t buf_id, off_t buf_offs, size_t len, off_t off)
+{
+	pfsd_file_t *file = NULL;
+
+	CHECK_WRITABLE();
+	PFSD_SDK_GET_FILE(fd);
+
+	if (len == 0) {
+		pfsd_put_file(file);
+		return 0;
+	}
+
+	if (len > PFSD_MAX_IOSIZE) {
+		PFSD_CLIENT_ELOG("pwrite len %lu is too big for fd %d.", len, fd);
+		errno = EFBIG;
+		pfsd_put_file(file);
+		return -1;
+	}
+
+	off_t off2 = off;
+	if (file->f_flags & O_APPEND)
+		off2 = OFFSET_FILE_SIZE;
+	else if (off == OFFSET_FILE_POS)
+		off2 = file->f_offset;
+
+	if (off2 < 0 && off2 != OFFSET_FILE_SIZE) {
+		PFSD_CLIENT_ELOG("pwrite wrong off2 %lu for fd %d.", off2, fd);
+		pfsd_put_file(file);
+		errno = EINVAL;
+		return -1;
+	}
+
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+
+	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
+		errno = err;
+		return -1;
+	}
+
+	req->memBufId = buf_id;
+	req->offset = buf_offs;
+	req->size = len;
+
+	/* fill request */
+	req->type = PFSD_REQUEST_WRITE;
+	req->req.w_req.w_ino = file->f_inode;
+	req->req.w_req.w_len = len;
+	req->req.w_req.w_off = off2;
+	req->req.w_req.w_flags = file->f_flags;
+	req->req.w_req.common_pl_req = file->f_common_pl;
+
+	client->executeRequest(r.rp, req);
+
+	ssize_t ss = req->rsp.w_rsp.w_len;
+	if (ss < 0) {
+		errno = req->rsp.w_rsp.error;
+		PFSD_CLIENT_ELOG("pwrite fd %d ino %ld error: %s", fd,
+		    file->f_inode, strerror(errno));
+	} else {
+		if (ss >= 0 && off == -1) {
+			__sync_add_and_fetch(&file->f_offset, ss);
+		}
+		if ((file->f_flags & O_APPEND) != 0 && OFFSET_FILE_POS == off)
+			file->f_offset = req->rsp.w_rsp.w_file_size;
+	}
+
+	pfsd_put_file(file);
+
+	pfsd_free_req_and_buf(r);
+
 	return ss;
 }
 
@@ -779,40 +969,38 @@ pfsd_fallocate(int fd, int mode, off_t offset, off_t len)
 	pfsd_file_t *file = NULL;
 	PFSD_SDK_GET_FILE(fd);
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	pfsd_response_t *rsp = NULL;
 	int rv = -1;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, 0, (void**)&req, 0, (void**)&rsp,
-	    NULL, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
-		pfsd_put_file(file);
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+
+	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
+		errno = err;
 		return -1;
 	}
 
 	PFSD_CLIENT_LOG("fallocate ino %ld off %ld len %ld", file->f_inode, offset, len);
 	/* fill request */
 	req->type = PFSD_REQUEST_FALLOCATE;
-	req->fa_req.f_ino = file->f_inode;
-	req->fa_req.f_len = len;
-	req->fa_req.f_off = offset;
-	req->fa_req.f_mode = mode;
-	req->common_pl_req = file->f_common_pl;
+	req->req.fa_req.f_ino = file->f_inode;
+	req->req.fa_req.f_len = len;
+	req->req.fa_req.f_off = offset;
+	req->req.fa_req.f_mode = mode;
+	req->req.fa_req.common_pl_req = file->f_common_pl;
 
-	pfsd_chnl_send_recv(s_connid, req, 0,
-	    rsp, 0, NULL, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	rv = rsp->fa_rsp.f_res;
+	rv = req->rsp.fa_rsp.f_res;
 	if (rv != 0) {
-		errno = rsp->error;
+		errno = req->rsp.fa_rsp.error;
 		PFSD_CLIENT_ELOG("fallocate ino %ld error: %s", file->f_inode, strerror(errno));
 	}
 
 	pfsd_put_file(file);
-	pfsd_chnl_buffer_free(s_connid, req, rsp, NULL, pfsd_tolong(ch));
+
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -838,38 +1026,37 @@ pfsd_truncate(const char *pbdpath, off_t len)
 	CHECK_MOUNT(pbdname);
 	CHECK_WRITABLE();
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	int rv = -1;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
+
+	int rv = -1;
 
 	PFSD_CLIENT_LOG("truncate %s len %ld", pbdpath, len);
 
 	/* fill request */
 	req->type = PFSD_REQUEST_TRUNCATE;
-	req->t_req.t_len = len;
+	req->req.t_req.t_len = len;
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN, rsp, 0, buf,
-	    pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	rv = rsp->t_rsp.t_res;
+	rv = req->rsp.t_rsp.t_res;
 	if (rv != 0) {
-		errno = rsp->error;
+		errno = req->rsp.t_rsp.error;
 		PFSD_CLIENT_ELOG("truncate %s len %ld error: %s", pbdpath, len, strerror(errno));
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -886,38 +1073,39 @@ pfsd_ftruncate(int fd, off_t len)
 	pfsd_file_t *file = NULL;
 	PFSD_SDK_GET_FILE(fd);
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	int rv = -1;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, 0, (void**)&req, 0,
-	    (void**)&rsp, NULL, (long*)(&ch)) != 0) {
-		pfsd_put_file(file);
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
+
+	int rv = -1;
 
 	PFSD_CLIENT_LOG("ftruncate ino %ld, len %lu", file->f_inode, len);
 
 	/* fill request */
 	req->type = PFSD_REQUEST_FTRUNCATE;
-	req->ft_req.f_ino = file->f_inode;
-	req->ft_req.f_len = len;
-	req->common_pl_req = file->f_common_pl;
+	req->req.ft_req.f_ino = file->f_inode;
+	req->req.ft_req.f_len = len;
+	req->req.ft_req.common_pl_req = file->f_common_pl;
 
-	pfsd_chnl_send_recv(s_connid, req, 0, rsp, 0, NULL, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	rv = rsp->ft_rsp.f_res;
+	rv = req->rsp.ft_rsp.f_res;
 	if (rv != 0) {
-		errno = rsp->error;
+		errno = req->rsp.ft_rsp.error;
 		PFSD_CLIENT_ELOG("ftruncate ino %ld, len %lu: %s", file->f_inode, len, strerror(errno));
 	}
 
 	pfsd_put_file(file);
-	pfsd_chnl_buffer_free(s_connid, req, rsp, NULL, pfsd_tolong(ch));
+
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -939,18 +1127,18 @@ pfsd_unlink(const char *pbdpath)
 	/* check writable */
 	CHECK_WRITABLE();
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	int rv = -1;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
+
+	int rv = -1;
 
 	PFSD_CLIENT_LOG("unlink %s", pbdpath);
 	/* fill request */
@@ -958,18 +1146,17 @@ retry:
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN,
-	    rsp, 0, buf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	rv = rsp->un_rsp.u_res;
+	rv = req->rsp.un_rsp.u_res;
 	if (rv != 0) {
-		errno = rsp->error;
+		errno = req->rsp.un_rsp.error;
 		if (errno != ENOENT)
 			PFSD_CLIENT_ELOG("unlink %s: %s", pbdpath, strerror(errno));
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -986,38 +1173,37 @@ pfsd_stat(const char *pbdpath, struct stat *st)
 	if (pbdpath == NULL)
 		return -1;
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	int rv = -1;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
+
+	int rv = -1;
 
 	/* fill request */
 	req->type = PFSD_REQUEST_STAT;
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN,
-	    rsp, 0, buf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	rv = rsp->s_rsp.s_res;
+	rv = req->rsp.s_rsp.s_res;
 	if (rv != 0) {
-		errno = rsp->error;
+		errno = req->rsp.r_rsp.error;
 		if (errno != ENOENT)
 			PFSD_CLIENT_ELOG("stat %s: %s", pbdpath, strerror(errno));
 	} else {
-		memcpy(st, &rsp->s_rsp.s_st, sizeof(*st));
+		memcpy(st, &req->rsp.s_rsp.s_st, sizeof(*st));
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -1032,37 +1218,36 @@ pfsd_fstat(int fd, struct stat *st)
 	pfsd_file_t *file = NULL;
 	PFSD_SDK_GET_FILE(fd);
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	int rv = -1;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, 0, (void**)&req, 0,
-	    (void**)&rsp, NULL, (long*)(&ch)) != 0) {
-		pfsd_put_file(file);
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
+		errno = err;
 		return -1;
 	}
 
+	int rv = -1;
+
 	/* fill request */
 	req->type = PFSD_REQUEST_FSTAT;
-	req->f_req.f_ino = file->f_inode;
-	req->common_pl_req = file->f_common_pl;
+	req->req.f_req.f_ino = file->f_inode;
+	req->req.f_req.common_pl_req = file->f_common_pl;
 
-	pfsd_chnl_send_recv(s_connid, req, 0, rsp, 0, NULL, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	rv = rsp->f_rsp.f_res;
+	rv = req->rsp.f_rsp.f_res;
 	if (rv != 0) {
-		errno = rsp->error;
+		errno = req->rsp.f_rsp.error;
 		PFSD_CLIENT_ELOG("fstat %ld error: %s", file->f_inode, strerror(errno));
 	} else {
-		memcpy(st, &rsp->f_rsp.f_st, sizeof(*st));
+		memcpy(st, &req->rsp.f_rsp.f_st, sizeof(*st));
 	}
 
 	pfsd_put_file(file);
-	pfsd_chnl_buffer_free(s_connid, req, rsp, NULL, pfsd_tolong(ch));
+
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -1127,52 +1312,50 @@ pfsd_lseek(int fd, off_t offset, int whence)
 	pfsd_file_t *file = NULL;
 	PFSD_SDK_GET_FILE_WR(fd);
 
-	/* for ask pfsd if SEEK_END */
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	pfsd_response_t *rsp = NULL;
-
 	off_t rv = -1;
 	rv = local_file_lseek(file, offset, whence);
-	if (rv >= 0)
-		goto finish;
-	if (rv == off_t(-1) && errno != 0)
-		goto finish;
-
-retry:
-	/* ask pfsd to seek end */
-	if (pfsd_chnl_buffer_alloc(s_connid, 0, (void**)&req, 0,
-	    (void**)&rsp, NULL, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if (rv >= 0) {
 		pfsd_put_file(file);
+		return rv;
+	}
+	if (rv == off_t(-1) && errno != 0) {
+		pfsd_put_file(file);
+		return rv;
+	}
+
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+
+	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
+		errno = err;
 		return -1;
 	}
 
 	/* fill request */
 	req->type = PFSD_REQUEST_LSEEK;
-	req->l_req.l_ino = file->f_inode;
-	req->l_req.l_offset = offset;
-	req->l_req.l_whence = whence;
-	req->common_pl_req = file->f_common_pl;
+	req->req.l_req.l_ino = file->f_inode;
+	req->req.l_req.l_offset = offset;
+	req->req.l_req.l_whence = whence;
+	req->req.l_req.common_pl_req = file->f_common_pl;
 	assert (whence == SEEK_END); /* must be SEED_END */
 
-	pfsd_chnl_send_recv(s_connid, req, 0, rsp, 0, NULL, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->l_rsp.l_offset < 0) {
-		errno = rsp->error;
+	if (req->rsp.l_rsp.l_offset < 0) {
+		errno = req->rsp.l_rsp.error;
 		rv = off_t(-1);
 		PFSD_CLIENT_ELOG("lseek %ld off %ld error: %s", file->f_inode,
 		    offset, strerror(errno));
 	} else {
-		file->f_offset = rsp->l_rsp.l_offset;
-		rv = rsp->l_rsp.l_offset;
+		file->f_offset = req->rsp.l_rsp.l_offset;
+		rv = req->rsp.l_rsp.l_offset;
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, NULL, pfsd_tolong(ch));
-
-finish:
 	pfsd_put_file(file);
+
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -1220,32 +1403,29 @@ pfsd_chdir(const char *pbdpath)
 	if (!pfsd_chdir_begin())
 		return -1;
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	int rv = -1;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		pfsd_chdir_end();
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
+
+	int rv = -1;
 
 	/* fill request */
 	req->type = PFSD_REQUEST_CHDIR;
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN,
-	    rsp, 0, buf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	rv = rsp->cd_rsp.c_res;
+	rv = req->rsp.cd_rsp.c_res;
 	if (rv != 0) {
-		errno = rsp->error;
+		errno = req->rsp.cd_rsp.error;
 		PFSD_CLIENT_ELOG("chdir %s error: %s", pbdpath, strerror(errno));
 	} else {
 		int err = pfsd_normalize_path(abspath);
@@ -1259,7 +1439,9 @@ retry:
 	}
 
 	pfsd_chdir_end();
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+
+	pfsd_free_req_and_buf(r);
+
 	return rv;
 }
 
@@ -1307,16 +1489,14 @@ pfsd_mkdir(const char *pbdpath, mode_t mode)
 	CHECK_MOUNT(pbdname);
 	CHECK_WRITABLE();
 
-	int err = 0;
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
 
@@ -1326,17 +1506,16 @@ retry:
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN,
-	    rsp, 0, buf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->mk_rsp.m_res != 0) {
+	if (req->rsp.mk_rsp.m_res != 0) {
 		err = -1;
-		errno = rsp->error;
+		errno = req->rsp.mk_rsp.error;
 		PFSD_CLIENT_ELOG("mkdir %s error: %s", pbdpath, strerror(errno));
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return err;
 }
 
@@ -1357,16 +1536,14 @@ pfsd_rmdir(const char *pbdpath)
 	CHECK_MOUNT(pbdname);
 	CHECK_WRITABLE();
 
-	int err = 0;
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	pfsd_response_t *rsp = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
 
@@ -1376,17 +1553,16 @@ retry:
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN,
-	    rsp, 0, buf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->rm_rsp.r_res != 0) {
+	if (req->rsp.rm_rsp.r_res != 0) {
 		err = -1;
-		errno = rsp->error;
+		errno = req->rsp.rm_rsp.error;
 		PFSD_CLIENT_ELOG("rmdir %s error: %s", pbdpath, strerror(errno));
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return err;
 }
 
@@ -1411,32 +1587,29 @@ pfsd_opendir(const char *pbdpath)
 		return NULL;
 	}
 
-	DIR *dir = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	unsigned char *buf = NULL;
-	pfsd_response_t *rsp = NULL;
-
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return NULL;
 	}
+
+	DIR *dir = NULL;
 
 	/* fill request */
 	req->type = PFSD_REQUEST_OPENDIR;
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN,
-	    rsp, 0, buf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->od_rsp.o_res != 0) {
+	if (req->rsp.od_rsp.o_res != 0) {
 		dir = NULL;
-		errno = rsp->error;
+		errno = req->rsp.od_rsp.error;
 		PFSD_CLIENT_ELOG("opendir %s error: %s", pbdpath, strerror(errno));
 	} else {
 		dir = PFSD_MALLOC(DIR);
@@ -1444,12 +1617,12 @@ retry:
 			errno = ENOMEM;
 		} else {
 			memset(dir, 0, sizeof(*dir));
-			dir->d_ino = rsp->od_rsp.o_dino;
-			dir->d_next_ino = rsp->od_rsp.o_first_ino;
+			dir->d_ino = req->rsp.od_rsp.o_dino;
+			dir->d_next_ino = req->rsp.od_rsp.o_first_ino;
 		}
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
 
 	if (dir == NULL)
 		return NULL;
@@ -1514,51 +1687,47 @@ pfsd_readdir_r(DIR *dir, struct dirent *entry, struct dirent **result)
 		return 0;
 	}
 
-	int err = 0;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *dbuf;
 
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	pfsd_response_t *rsp = NULL;
-	unsigned char *dbuf = NULL;
-
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, 0, (void**)&req,
-	    PFSD_DIRENT_BUFFER_SIZE, (void**)&rsp, (void**)&dbuf, (long*)(&ch))
-	    != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFSD_DIRENT_BUFFER_SIZE, &req,
+					  (void **)&dbuf)) != 0) {
+		errno = err;
 		return -1;
 	}
+
 	/* fill request */
 	req->type = PFSD_REQUEST_READDIR;
-	req->rd_req.r_dino = dir->d_ino;
-	req->rd_req.r_ino = dir->d_next_ino;
-	req->rd_req.r_offset = dir->d_next_offset;
+	req->req.rd_req.r_dino = dir->d_ino;
+	req->req.rd_req.r_ino = dir->d_next_ino;
+	req->req.rd_req.r_offset = dir->d_next_offset;
 
-	pfsd_chnl_send_recv(s_connid, req, 0,
-	    rsp, PFSD_DIRENT_BUFFER_SIZE, dbuf, pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->rd_rsp.r_res != 0) {
+	if (req->rsp.rd_rsp.r_res != 0) {
 		*result = NULL;
 
 		/* Dir EOF is not error */
-		if (rsp->rd_rsp.r_res != PFSD_DIR_END) {
+		if (req->rsp.rd_rsp.r_res != PFSD_DIR_END) {
 			err = -1;
-			errno = rsp->error;
+			errno = req->rsp.rd_rsp.error;
 		}
 	} else {
 		*result = entry;
 
-		dir->d_data_size = rsp->rd_rsp.r_data_size;
+		dir->d_data_size = req->rsp.rd_rsp.r_data_size;
 		memcpy(dir->d_data, dbuf, dir->d_data_size);
 
 		memcpy(entry, &dir->d_data[0], sizeof(*entry));
 		dir->d_data_offset = sizeof(*entry);
-		dir->d_next_ino = rsp->rd_rsp.r_ino;
-		dir->d_next_offset = rsp->rd_rsp.r_offset;
+		dir->d_next_ino = req->rsp.rd_rsp.r_ino;
+		dir->d_next_offset = req->rsp.rd_rsp.r_offset;
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, dbuf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
+
 	return err;
 }
 
@@ -1608,38 +1777,34 @@ pfsd_access(const char *pbdpath, int amode)
 		CHECK_WRITABLE();
 	}
 
-	int err = 0;
-	pfsd_iochannel_t *ch = NULL;
-	pfsd_request_t *req = NULL;
-	pfsd_response_t *rsp = NULL;
-	unsigned char *buf = NULL;
+	int err;
+	req_and_buf_info r;
+	ipc::Request *req;
+	char *buf;
 
-retry:
-	if (pfsd_chnl_buffer_alloc(s_connid, PFS_MAX_PATHLEN, (void**)&req, 0,
-	    (void**)&rsp, (void**)&buf, (long*)(&ch)) != 0) {
-		errno = ENOMEM;
+	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
+					  (void **)&buf)) != 0) {
+		errno = err;
 		return -1;
 	}
 
 	/* fill request */
 	req->type = PFSD_REQUEST_ACCESS;
-	req->a_req.a_mode = amode;
+	req->req.a_req.a_mode = amode;
 	/* copy pbdpath to iobuf */
 	strncpy((char*)buf, pbdpath, PFS_MAX_PATHLEN);
 
-	pfsd_chnl_send_recv(s_connid, req, PFS_MAX_PATHLEN, rsp, 0, buf,
-	    pfsd_tolong(ch), 0);
-	CHECK_STALE(rsp);
+	client->executeRequest(r.rp, req);
 
-	if (rsp->a_rsp.a_res != 0) {
+	if (req->rsp.a_rsp.a_res != 0) {
 		err = -1;
-		errno = rsp->error;
+		errno = req->rsp.a_rsp.error;
 		if (errno != ENOENT)
 			PFSD_CLIENT_ELOG("access %s: %s", pbdpath,
 			    strerror(errno));
 	}
 
-	pfsd_chnl_buffer_free(s_connid, req, rsp, buf, pfsd_tolong(ch));
+	pfsd_free_req_and_buf(r);
 
 	return err;
 }
@@ -1673,6 +1838,53 @@ int
 pfsd_chown(const char *pbdpath, uid_t owner, gid_t group)
 {
 	return 0;
+}
+
+int
+pfsd_alloc_shared_mem_pool(const char *name, size_t elem_size, size_t capacity,
+			   int num_local_lists, int local_list_limit)
+{
+	if (client == nullptr) {
+		client = new ipc::Session;
+	}
+
+	const auto real_elem_size = folly::nextPowTwo(elem_size);
+	auto pool = std::make_unique<ipc::SharedIndexedMemPool<> >(
+		name, real_elem_size, capacity, num_local_lists,
+		local_list_limit);
+	if (client->registerMemPool(std::move(pool), false)) {
+		s_n_custom_mem_pools++;
+		return 0;
+	}
+	return -1;
+}
+
+pfsd_buf pfsd_alloc(size_t total_mem)
+{
+	pfsd_buf rv{ (uint64_t)-1, -1, nullptr };
+	ipc::SharedMemoryPools::AllocResult r;
+	if (!client->alloc(total_mem, r)) {
+		return rv;
+	}
+	rv.buf_id = r.bufferId;
+	rv.offs = r.offset;
+	rv.ptr = r.ptr;
+	return rv;
+}
+
+void
+pfsd_free(pfsd_buf buf)
+{
+	if (buf.ptr == nullptr) {
+		return;
+	}
+
+	ipc::SharedMemoryPools::AllocResult r;
+	r.bufferId = buf.buf_id;
+	r.offset = buf.offs;
+	r.ptr = buf.ptr;
+
+	client->free(r);
 }
 
 static const uint64_t

@@ -22,7 +22,7 @@
 #include "pfsd_common.h"
 #include "pfsd_proto.h"
 
-pid_t g_pid;
+pid_t g_pid = -1;
 
 static std::mutex s_pid_init_mutex;
 

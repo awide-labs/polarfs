@@ -27,7 +27,6 @@ set(COMMON_FLAGS
   #-fsanitize=address
   #-DEV_STANDALONE
   -Wall
-  -Werror
   -Wno-deprecated-declarations
   -Wno-unused-result
   -Wno-format-overflow
@@ -42,6 +41,7 @@ set(COMMON_FLAGS
   -Wformat -Wformat-security -Wformat-nonliteral
   -fno-omit-frame-pointer
   -gdwarf-5
+  -fPIC
   )
 
 if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64")
@@ -77,9 +77,6 @@ set(C_FLAGS
 string(REPLACE ";" " " CMAKE_CXX_FLAGS "${CXX_FLAGS}")
 string(REPLACE ";" " " CMAKE_C_FLAGS "${C_FLAGS}")
 
-set(CMAKE_CXX_COMPILER "g++")
-set(CMAKE_C_COMPILER "cc")
-
 set(DEBUG_LEVEL 20)
 set(RELEASE_LEVEL 40)
 
@@ -105,5 +102,9 @@ message(STATUS "C_FLAGS = " ${CMAKE_C_FLAGS} " " ${CMAKE_C_FLAGS_${BUILD_TYPE}})
 
 execute_process(COMMAND mkdir -p ${PROJECT_SOURCE_DIR}/include)
 execute_process(COMMAND cp ${PROJECT_SOURCE_DIR}/src/pfs_sdk/pfsd_sdk.h ${PROJECT_SOURCE_DIR}/include/)
+execute_process(COMMAND cp ${PROJECT_SOURCE_DIR}/src/pfs_core/pfs_api.h ${PROJECT_SOURCE_DIR}/include/)
 
+add_definitions(-DGLOG_USE_GLOG_EXPORT)
+
+add_subdirectory(third-party/folly)
 add_subdirectory(src)
