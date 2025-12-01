@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 
+#include <atomic>
 #include <sys/queue.h>
 
 #include <malloc.h>
@@ -21,16 +22,21 @@
 #include "pfs_impl.h"
 #include "pfs_admin.h"
 
+constexpr size_t MEMCOUNTER_SHARDS = 64;
+thread_local int tls_memcounter_idx = pthread_self() % MEMCOUNTER_SHARDS;
+
 typedef struct pfs_memtype {
 	const char 	*mt_name;
-	pthread_mutex_t	mt_mtx;
-	ssize_t		mt_bytes_alloc;
-	ssize_t 	mt_bytes_free;
-	int64_t		mt_count_alloc;
-	int64_t		mt_count_free;
+	struct {
+		std::atomic<ssize_t>		mt_bytes_alloc;
+		std::atomic<ssize_t>		mt_bytes_free;
+		std::atomic<int64_t>		mt_count_alloc;
+		std::atomic<int64_t>		mt_count_free;
+		char		mt_padding[64 - sizeof(ssize_t) * 2 - sizeof(int64_t) * 2];
+	} conters[MEMCOUNTER_SHARDS];
 } pfs_memtype_t;
 
-#define	MEMTYPE_ENTRY(tag)	[tag] = { #tag, PTHREAD_MUTEX_INITIALIZER, }
+#define	MEMTYPE_ENTRY(tag)	[tag] = { #tag, }
 static pfs_memtype_t	pfs_mem_type[M_NTYPE] = {
 	MEMTYPE_ENTRY(M_NONE),
 	MEMTYPE_ENTRY(M_SECTOR),
@@ -97,29 +103,21 @@ memtype_name(int type)
 static void
 memtype_inc(int type, int count, size_t size)
 {
-	pfs_memtype_t *mt;
-
 	PFS_ASSERT(0 < type && type < M_NTYPE);
 
-	mt = &pfs_mem_type[type];
-	mutex_lock(&mt->mt_mtx);
-	mt->mt_bytes_alloc += (ssize_t)size;
-	mt->mt_count_alloc += count;
-	mutex_unlock(&mt->mt_mtx);
+	auto &cell = pfs_mem_type[type].conters[tls_memcounter_idx];
+	cell.mt_bytes_alloc.fetch_add(size, std::memory_order_relaxed);
+	cell.mt_count_alloc.fetch_add(count, std::memory_order_relaxed);
 }
 
 static void
 memtype_dec(int type, size_t size)
 {
-	pfs_memtype_t *mt;
-
 	PFS_ASSERT(0 < type && type < M_NTYPE);
 
-	mt = &pfs_mem_type[type];
-	mutex_lock(&mt->mt_mtx);
-	mt->mt_bytes_free += (ssize_t)size;
-	mt->mt_count_free += 1;
-	mutex_unlock(&mt->mt_mtx);
+	auto &cell = pfs_mem_type[type].conters[tls_memcounter_idx];
+	cell.mt_bytes_free.fetch_add(size, std::memory_order_relaxed);
+	cell.mt_count_free.fetch_add(1, std::memory_order_relaxed);
 }
 
 void *
@@ -184,8 +182,8 @@ pfs_mem_stat(admin_buf_t *ab)
 {
 	int n, t;
 	pfs_memtype_t *mt;
-	ssize_t sballoc, sbfree;
-	int64_t scalloc, scfree;
+	ssize_t sballoc, sbfree, balloc, bfree;
+	int64_t scalloc, scfree, calloc, cfree;
 
 	n = pfs_adminbuf_printf(ab, "%-20s %16s %16s %16s %16s\n",
 	    "name", "alloc-count", "free-count", "alloc-bytes", "free-bytes");
@@ -196,15 +194,26 @@ pfs_mem_stat(admin_buf_t *ab)
 	scalloc = scfree = 0;
 	for (t = 1; t < M_NTYPE; t++) {
 		mt = &pfs_mem_type[t];
-		sballoc += mt->mt_bytes_alloc;
-		sbfree += mt->mt_bytes_free;
-		scalloc += mt->mt_count_alloc;
-		scfree += mt->mt_count_free;
+
+		balloc = bfree = 0;
+		calloc = cfree = 0;
+
+		for (int shard = 0; shard < MEMCOUNTER_SHARDS; shard++) {
+			auto &cell = pfs_mem_type[t].conters[shard];
+			balloc += cell.mt_bytes_alloc.load(std::memory_order_relaxed);
+			bfree += cell.mt_bytes_free.load(std::memory_order_relaxed);
+			calloc += cell.mt_count_alloc.load(std::memory_order_relaxed);
+			cfree += cell.mt_count_free.load(std::memory_order_relaxed);
+		}
+
+		sballoc += balloc;
+		sbfree += bfree;
+		scalloc += calloc;
+		scfree += cfree;
 
 		n = pfs_adminbuf_printf(ab,
 		    "%-20s %16lld %16lld %16lld %16lld\n",
-		    mt->mt_name, mt->mt_count_alloc, mt->mt_count_free,
-		    mt->mt_bytes_alloc, mt->mt_bytes_free);
+		    mt->mt_name, calloc, cfree, balloc, bfree);
 		if (n < 0)
 			return n;
 	}
