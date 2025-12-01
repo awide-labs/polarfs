@@ -1768,8 +1768,8 @@ pfs_log_start(pfs_log_t *log)
 	mutex_init(&log->log_trimreq.r_mtx);
 	cond_init(&log->log_trimreq.r_cond, NULL);
 
-	buf = (char *)pfs_mem_malloc(PFS_FRAG_SIZE, M_FRAG);
-	if (buf == NULL)
+	err = pfs_mem_memalign((void **)&buf, alignof(pfs_logentry_phy_t), PFS_FRAG_SIZE, M_FRAG);
+	if (err != 0)
 		ERR_RETVAL(ENOMEM);
 	log->log_workbuf = buf;
 	log->log_workbufsz = PFS_FRAG_SIZE;
