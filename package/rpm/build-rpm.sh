@@ -68,7 +68,7 @@ main() {
         -d libicu \
         -d libstdc++ \
         -d libunwind \
-        -d python3
+        -d python3 \
         --force \
         --description "Alibaba PolarFS distributed file system" \
         -C install etc/ usr/ var/
