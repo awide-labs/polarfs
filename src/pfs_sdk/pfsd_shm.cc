@@ -515,6 +515,8 @@ int
 pfsd_sdk_alloc_request(int32_t connid, size_t iosize, pfsd_shm_t *shm[],
     int nshm, pfsd_iochannel_t **och, pfsd_request_t **oreq)
 {
+	thread_local unsigned int tls_rand_seed = pthread_self();
+
 	assert (och && oreq);
 	*och = NULL;
 	*oreq = NULL;
@@ -540,7 +542,7 @@ get_req:
 		assert (unit_size > 0);
 		int nreq = ((pfsd_iochannel_t*)channels)->ch_max_req;
 		/* rand select a channel */
-		int chidx = rand() % shm[si]->sh_nch;
+		int chidx = rand_r(&tls_rand_seed) % shm[si]->sh_nch;
 		for (int tried = 0; tried < shm[si]->sh_nch; ++tried) {
 			ch = (pfsd_iochannel_t *)(channels + chidx * pfsd_channel_size(nreq, unit_size));
 			req = pfsd_shm_get_request(ch, connid);
