@@ -944,7 +944,7 @@ chnl_ctx_create_shm(const char *svr_addr, bool is_svr)
 		return NULL;
 	}
 
-	result = (chnl_ctx_shm_t *)calloc(sizeof(chnl_ctx_shm_t), 1);
+	result = (chnl_ctx_shm_t *)calloc(1, sizeof(chnl_ctx_shm_t));
 	if (result == NULL) {
 		errno = ENOMEM;
 		goto fail;
