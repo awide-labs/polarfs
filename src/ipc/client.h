@@ -169,7 +169,7 @@ public:
     return pools_.alloc(size, r);
   }
 
-  bool allocRequest(SharedMemoryPools::AllocResult &r) {
+  void allocRequest(SharedMemoryPools::AllocResult &r) {
     return pools_.allocRequest(r);
   }
 

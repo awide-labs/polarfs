@@ -2,6 +2,7 @@
 
 #include "SharedIndexedMemPool.h"
 #include "memfd.h"
+#include "pfsd_common.h"
 #include "proto.h"
 #include <algorithm>
 #include <cstddef>
@@ -59,54 +60,72 @@ struct SharedMemoryPools {
     return id;
   }
 
+  /*
+   * Allocate a memory buffer of the given size from one of the memory pools
+   */
   bool alloc(size_t size, AllocResult &r) {
-    const size_t sizeKiB = size / 1024;
-    const size_t roundSize = sizeKiB > 0 ? folly::nextPowTwo(sizeKiB) : 2;
-    const unsigned bucket = folly::findLastSet(roundSize) - 2;
+    // Calculate the power of two exponent (log2) of the requested size in KiB
+    const size_t sizeKiB = (size + 1023) / 1024;
+    const size_t roundSize = folly::nextPowTwo(sizeKiB);
+    const unsigned bucket = folly::findLastSet(sizeKiB) - 1;
 
+    // We don't have a pool capable to serve allocations this large
     if (bucket >= poolSizeIndices_.size()) {
+      PFSD_CLIENT_LOG("Failed to allocate IO buffer of size %zu", size);
       return false;
     }
 
-    unsigned index = poolSizeIndices_[bucket];
+    for (;;) {
+      int tryBucket = bucket;
+      // Start with smallest pool able to serve requests of our size
+      while (tryBucket < poolSizeIndices_.size()) {
+        unsigned index = poolSizeIndices_[tryBucket];
+        auto &pool = pools_[index];
+        uint32_t allocIndex = pool->allocIndex();
+        if (allocIndex == 0) {
+          // Try larger pools
+          ++tryBucket;
+          continue;
+        }
 
-    while (index < pools_.size()) {
-      auto &pool = pools_[index];
+        // Success
+        r.bufferId = poolIds_[index];
+        r.offset = pool->offsetOf(allocIndex);
+        r.size = size;
+        r.ptr = (*pool)[allocIndex];
+
+        return true;
+      }
+
+      // All pools are exhausted, wait for someone to release an object
+      waitForFreeSpace();
+    }
+  }
+
+  void allocRequest(AllocResult &r) {
+    auto &pool = requestsPool_;
+    for (;;) {
       uint32_t allocIndex = pool->allocIndex();
       if (allocIndex == 0) {
+        // Wait for someone to release an object
+        waitForFreeSpace();
         continue;
       }
 
-      r.bufferId = poolIds_[index];
+      r.bufferId = requestsPoolId_;
       r.offset = pool->offsetOf(allocIndex);
-      r.size = size;
+      r.size = sizeof(Request);
       r.ptr = (*pool)[allocIndex];
 
-      return true;
+      return;
     }
-
-    return false;
-  }
-
-  bool allocRequest(AllocResult &r) {
-    auto &pool = requestsPool_;
-    uint32_t allocIndex = pool->allocIndex();
-    if (allocIndex == 0) {
-      return false;
-    }
-
-    r.bufferId = requestsPoolId_;
-    r.offset = pool->offsetOf(allocIndex);
-    r.size = sizeof(Request);
-    r.ptr = (*pool)[allocIndex];
-
-    return true;
   }
 
   void free(AllocResult &r) {
     auto &pool = pools_[poolIndexById_[r.bufferId]];
     uint32_t elemIndex = pool->locateElem(r.ptr);
     pool->recycleIndex(elemIndex);
+    maybeWakeWaiters();
   }
 
   void freeRequest(AllocResult &r) {
@@ -157,30 +176,78 @@ struct SharedMemoryPools {
   }
 
 private:
+  /**
+   * Builds a mapping from pool element size expressed as pow2 in KiB
+   * to the index of the pool that can handle allocations of that size.
+   *
+   * Result: poolSizeIndices_[n] gives the index of the smallest pool
+   * that can serve allocations up to 2^(n) KiB in size.
+   *
+   * This mapping is used for constant time lookups in alloc() method.
+   */
   void populateSizeIndices() {
-    std::vector<std::pair<unsigned, unsigned>> powers;
-    powers.reserve(pools_.size());
+    // Build a mapping from pool index to its "power" value.
+    // Power value is the largest power of two <= pool element size in KiB 
+    std::vector<std::pair<unsigned, unsigned>> powers(pools_.size());
     unsigned maxPower = 0;
-    unsigned i = 0;
-    for (auto &p : pools_) {
+    for (unsigned i = 0; i < pools_.size(); i++) {
+      auto &p = pools_[i];
       auto size = p->elemSize() / 1024;
-      auto power = folly::findLastSet(size) - 1;
+      auto power = size > 1 ? folly::findLastSet(size) - 1 : 0;
       powers.emplace_back(i, power);
-      if (power > maxPower) {
-        maxPower = power;
-      }
       maxPower = std::max(power, maxPower);
-      ++i;
     }
 
+    // Sort powers descending
     std::sort(powers.begin(), powers.end(),
               [](const auto &a, const auto &b) { return a.second > b.second; });
 
-    poolSizeIndices_.resize(maxPower);
+    // Build a mapping.
+    // Start with largest pool, it can serve requests of size ranging
+    // from 0 to it's power value. Assign poolSizeIndices_[0..pool_pow]
+    // Repeat for smaller pools.
+    // In the end we should get something like;
+    // poolSizeMapping_[0] = &pool-of-size-1024
+    // poolSizeMapping_[1] = &pool-of-size-4096
+    // poolSizeMapping_[2] = &pool-of-size-4096
+    // poolSizeMapping_[3] = &pool-of-size-8192
+    // poolSizeMapping_[4] = &pool-of-size-16384
+    // poolSizeMapping_[5] = &pool-of-size-65536
+    // poolSizeMapping_[6] = &pool-of-size-65536
+    // poolSizeMapping_[7] = &pool-of-size-1048576
+    // poolSizeMapping_[8] = &pool-of-size-1048576
+    // poolSizeMapping_[9] = &pool-of-size-1048576
+    // poolSizeMapping_[10] = &pool-of-size-1048576
+    poolSizeIndices_.resize(maxPower + 1);
     for (auto &p : powers) {
-      for (i = 0; i < p.second; i++) {
+      for (unsigned i = 0; i <= p.second; i++) {
         poolSizeIndices_[i] = p.first;
       }
+    }
+  }
+
+  void waitForFreeSpace() {
+    std::unique_lock lk(waitMutex_);
+    empty_.store(true, std::memory_order_release);
+    waitCV_.wait_for(lk, std::chrono::milliseconds(20));
+  }
+
+  void maybeWakeWaiters() {
+    // there is a race condition here:
+    // waiter acquires mutex
+    // waker checks empty_ flag and exits
+    // maiter sets empty_ = true and waits on cv
+    //
+    // it is fine, because
+    // 1. wait events should be extremely rare,
+    //    if they are not rarre, it is better to
+    //    increase pool size
+    // 2. wait on CV is timed, so waiter will soon
+    //    wake up and retry anyways
+    if (empty_.load(std::memory_order_acquire)) {
+      std::unique_lock lk(waitMutex_);
+      empty_.store(false, std::memory_order_release);
+      waitCV_.notify_all();
     }
   }
 
@@ -193,6 +260,9 @@ private:
   std::unordered_map<uint64_t, int> poolIndexById_;
   std::vector<int> poolSizeIndices_;
   std::atomic<uint64_t> nextId_{};
+  std::atomic<bool> empty_{false};
+  std::mutex waitMutex_;
+  std::condition_variable waitCV_;
 };
 
 /**

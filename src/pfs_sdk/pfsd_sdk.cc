@@ -155,9 +155,7 @@ static inline int
 pfsd_alloc_req_and_buf(req_and_buf_info &r, size_t buflen, ipc::Request **req,
 		       void **buf)
 {
-	if (!client->allocRequest(r.req_alloc_result)) {
-		return ENOMEM;
-	}
+	client->allocRequest(r.req_alloc_result);
 
 	r.rp.memBufId = r.req_alloc_result.bufferId;
 	r.rp.offset = r.req_alloc_result.offset;
@@ -575,6 +573,7 @@ pfsd_open(const char *pbdpath, int flags, mode_t mode)
 	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
 					  (void **)&buf)) != 0) {
 		errno = err;
+		pfsd_free_file(file);
 		return -1;
 	}
 
@@ -691,6 +690,7 @@ pfsd_pread(int fd, void *buf, size_t len, off_t off)
 
 	if ((err = pfsd_alloc_req_and_buf(r, len, &req, (void **)&rbuf)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
@@ -774,6 +774,7 @@ pfsd_pwrite(int fd, const void *buf, size_t len, off_t off)
 
 	if ((err = pfsd_alloc_req_and_buf(r, len, &req, (void **)&wbuf)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
@@ -837,6 +838,7 @@ ssize_t pfsd_pread_zxc(int fd, uint64_t buf_id, off_t buf_offs, size_t len, off_
 
 	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
@@ -911,6 +913,7 @@ ssize_t pfsd_pwrite_zxc(int fd, uint64_t buf_id, off_t buf_offs, size_t len, off
 
 	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
@@ -977,6 +980,7 @@ pfsd_fallocate(int fd, int mode, off_t offset, off_t len)
 
 	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
@@ -1081,6 +1085,7 @@ pfsd_ftruncate(int fd, off_t len)
 	if ((err = pfsd_alloc_req_and_buf(r, PFS_MAX_PATHLEN, &req,
 					  (void **)&buf)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
@@ -1329,6 +1334,7 @@ pfsd_lseek(int fd, off_t offset, int whence)
 
 	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
@@ -1822,6 +1828,7 @@ pfsd_fsync(int fd)
 
 	if ((err = pfsd_alloc_req_and_buf(r, 0, &req, nullptr)) != 0) {
 		errno = err;
+		pfsd_put_file(file);
 		return -1;
 	}
 
