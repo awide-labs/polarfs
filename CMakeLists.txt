@@ -40,7 +40,8 @@ set(COMMON_FLAGS
   -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
   -Wno-missing-declarations -fno-strict-aliasing
   -Wformat -Wformat-security -Wformat-nonliteral
-  -g
+  -fno-omit-frame-pointer
+  -gdwarf-5
   )
 
 if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64")
