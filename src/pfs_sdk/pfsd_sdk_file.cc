@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <unistd.h>
 
+#include "lib/dclcrwlock.h"
 #include "pfsd_common.h"
 #include "pfsd_sdk.h"
 #include "pfsd_sdk_file.h"
@@ -37,7 +38,7 @@ static pthread_rwlock_t sdk_work_dir_rwlock;
 static int fdtbl_free_last = -1;
 static pfsd_file_t *fdtbl[PFSD_MAX_NFD];
 static int fdtbl_nopen;
-static pthread_mutex_t fdtbl_mtx;
+static DCLCRWLock fdtbl_rwlock;
 
 static inline pfsd_file_t*
 fd_to_file(int fd)
@@ -48,13 +49,32 @@ fd_to_file(int fd)
 	return fdtbl[fd];
 }
 
+static inline void
+fdtbl_rdlock() {
+	fdtbl_rwlock.lock_shared();
+}
+
+static inline void
+fdtbl_wrlock() {
+	fdtbl_rwlock.lock();
+}
+
+static inline void
+fdtbl_rdunlock() {
+	fdtbl_rwlock.unlock_shared();
+}
+
+static inline void
+fdtbl_wrunlock() {
+	fdtbl_rwlock.unlock();
+}
+
 void pfsd_sdk_file_init()
 {
 	pthread_mutexattr_t attr;
 	int err = pthread_mutexattr_init(&attr);
 	pfsd_file_t *file = NULL;
 	err |= pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
-	err |= pthread_mutex_init(&fdtbl_mtx, &attr);
 	err |= pthread_mutexattr_destroy(&attr);
 	assert (err == 0);
 
@@ -69,6 +89,13 @@ void pfsd_sdk_file_init()
 	PFSD_ASSERT(fdtbl_nopen == 0);
 
 	pthread_rwlock_init(&sdk_work_dir_rwlock, NULL);
+
+	fdtbl_rwlock.init();
+}
+
+void pfsd_sdk_file_destroy()
+{
+	fdtbl_rwlock.destroy();
 }
 
 pfsd_file_t *
@@ -140,9 +167,9 @@ pfsd_alloc_fd(pfsd_file_t *file)
 {
 	file->f_fd = -1;
 
-	pthread_mutex_lock(&fdtbl_mtx);
+	fdtbl_wrlock();
 	file->f_fd = fd_get_free(file);
-	pthread_mutex_unlock(&fdtbl_mtx);
+	fdtbl_wrunlock();
 
 	if (file->f_fd == -1)
 		PFSD_CLIENT_ELOG("alloc fd failed");
@@ -155,12 +182,15 @@ pfsd_get_file(int fd, bool writelock)
 {
 	pfsd_file_t *file = NULL;
 
-	pthread_mutex_lock(&fdtbl_mtx);
+	fdtbl_rdlock();
 	if (0 <= fd && fd < PFSD_MAX_NFD)
 		file = fd_to_file(fd);
-	if (file)
+	if (file) {
+		pthread_mutex_lock(&file->f_mutex);
 		file->f_refcnt++;
-	pthread_mutex_unlock(&fdtbl_mtx);
+		pthread_mutex_unlock(&file->f_mutex);
+	}
+	fdtbl_rdunlock();
 
 	if (file) {
 		if (writelock)
@@ -180,9 +210,9 @@ pfsd_put_file(pfsd_file_t *f)
 	if (f) {
 		pthread_rwlock_unlock(&f->f_rwlock);
 
-		pthread_mutex_lock(&fdtbl_mtx);
+		pthread_mutex_lock(&f->f_mutex);
 		--f->f_refcnt;
-		pthread_mutex_unlock(&fdtbl_mtx);
+		pthread_mutex_unlock(&f->f_mutex);
 	}
 }
 
@@ -197,12 +227,14 @@ pfsd_close_file(pfsd_file_t *f)
 
 	int err = -EAGAIN;
 
-	pthread_mutex_lock(&fdtbl_mtx);
+	pthread_mutex_lock(&f->f_mutex);
 	if (f->f_refcnt <= 1) {
 		err = 0;
+		fdtbl_wrlock();
 		fd_put_free(f->f_fd);
+		fdtbl_wrunlock();
 	}
-	pthread_mutex_unlock(&fdtbl_mtx);
+	pthread_mutex_unlock(&f->f_mutex);
 	if (err == 0)
 		pfsd_free_file(f);
 

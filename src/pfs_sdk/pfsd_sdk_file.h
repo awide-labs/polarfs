@@ -32,6 +32,7 @@ bool pfsd_writable(int mnt_flags);
 
 typedef struct pfsd_file {
     pthread_rwlock_t f_rwlock;
+    pthread_mutex_t f_mutex;
     int     f_fd;
     int     f_flags;
     off_t   f_offset;
@@ -42,6 +43,7 @@ typedef struct pfsd_file {
 } pfsd_file_t;
 
 void pfsd_sdk_file_init();
+void pfsd_sdk_file_destroy();
 
 /* for sdk internal */
 pfsd_file_t *
