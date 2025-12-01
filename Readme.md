@@ -1,6 +1,11 @@
 You can refer to [Readme-CN](Readme-CN.md) for introduction in Chinese.
 # What is PFS
 The PolarDB File System (hereafter simplified as PFS or PolarFS) is a high-performance Distributed File System in User Space that is developed by Alibaba Cloud and used in PolarDB. PFS follows the standards of Portable Operating System Interface (POSIX). 
+
+# Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
 # Quick Start
 PFS for PostgreSQL uses the background process **_pfsdaemon_** to provide services. PFS for PostgreSQL is developed and tested based on AliOS and CentOS 7.5. Theoretically, PFS for PostgreSQL can also be built based on other Linux versions. 
 ## Install Dependencies
