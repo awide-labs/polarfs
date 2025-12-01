@@ -409,7 +409,7 @@ pfsd_remount(const char *cluster, const char *pbdname, int hostid, int flags)
 		goto failed;
 	}
 
-	if (!client->restart(cluster, hostid, flags, s_remount_timeout_ms)) {
+	if (client->remount(cluster, hostid, flags, s_remount_timeout_ms) == 0) {
 		s_mnt_flags = flags;
 		free(s_mount_local_info);
 		s_mount_local_info = mp;

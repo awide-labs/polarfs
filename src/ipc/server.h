@@ -310,6 +310,31 @@ private:
         continue;
       }
 
+      if (type == REMOUNT) {
+        RemountMessage message;
+
+        if (!message.deserialize(iobuf)) {
+          break;
+        }
+
+        int err = pfs_remount(message.cluster.c_str(), message.pbdname.c_str(),
+                              message.host_id, message.flags);
+
+        if (err != 0) {
+          pfsd_error("Remount error: %d", err);
+          host_id_ = -1;
+        } else {
+          pbdname_ = message.pbdname;
+          host_id_ = message.host_id;
+        }
+
+        RemountResultMessage reply;
+        reply.error = err;
+        socket_->writeChain(this, reply.serialize());
+
+        continue;
+      }
+
       break;
     }
   }

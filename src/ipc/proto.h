@@ -17,7 +17,9 @@ enum MessageType {
   SERVER_HELLO,
   REGISTER_QUEUES,
   REGISTER_BUFFERS,
-  ACK
+  ACK,
+  REMOUNT,
+  REMOUNT_RESULT,
 };
 
 struct BufferDesc {
@@ -162,6 +164,79 @@ struct ClientHelloMessage {
     size_t totalLength = cursor.readLE<uint32_t>();
 
     if (messageType != CLIENT_HELLO) {
+      return false;
+    }
+
+    if (buf->computeChainCapacity() < totalLength) {
+      return false;
+    }
+
+    auto version = cursor.readLE<uint32_t>();
+    if (version > 1) {
+      return false;
+    }
+
+    const uint32_t clusterLen = cursor.readLE<uint32_t>();
+    cluster = cursor.readFixedString(clusterLen);
+
+    const uint32_t pbdnameLen = cursor.readLE<uint32_t>();
+    pbdname = cursor.readFixedString(pbdnameLen);
+
+    host_id = cursor.readLE<int32_t>();
+    flags = cursor.readLE<int32_t>();
+
+    return true;
+  }
+};
+
+struct RemountMessage {
+  std::string cluster;
+  std::string pbdname;
+  int host_id;
+  int flags;
+
+  std::unique_ptr<folly::IOBuf> serialize() const {
+    const size_t totalSize =
+        sizeof(uint32_t) +                  // message type
+        sizeof(uint32_t) +                  // total length
+        sizeof(uint32_t) +                  // version
+        sizeof(uint32_t) + cluster.size() + // cluster length + data
+        sizeof(uint32_t) + pbdname.size() + // pbdname length + data
+        sizeof(int32_t) +                   // host_id
+        sizeof(int32_t);                    // flags
+
+    auto buf = folly::IOBuf::create(totalSize);
+    folly::io::Appender appender(buf.get(), 0);
+
+    appender.writeLE<uint32_t>(REMOUNT);
+    appender.writeLE<uint32_t>(totalSize);
+    appender.writeLE<uint32_t>(1); // version
+
+    appender.writeLE<uint32_t>(cluster.size());
+    appender.push(reinterpret_cast<const uint8_t *>(cluster.data()),
+                  cluster.size());
+
+    appender.writeLE<uint32_t>(pbdname.size());
+    appender.push(reinterpret_cast<const uint8_t *>(pbdname.data()),
+                  pbdname.size());
+
+    appender.writeLE<int32_t>(host_id);
+    appender.writeLE<int32_t>(flags);
+
+    return buf;
+  }
+
+  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
+    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+      return false;
+    }
+
+    folly::io::Cursor cursor(buf.get());
+
+    int messageType = cursor.readLE<uint32_t>();
+    size_t totalLength = cursor.readLE<uint32_t>();
+
+    if (messageType != REMOUNT) {
       return false;
     }
 
@@ -386,7 +461,63 @@ struct ServerHelloMessage {
       return false;
     }
 
+    if (type != SERVER_HELLO) {
+      return false;
+    }
+
     connectionId = cursor.readLE<uint64_t>();
+    error = cursor.readLE<int32_t>();
+
+    return true;
+  }
+};
+
+struct RemountResultMessage {
+  int error;
+
+  std::unique_ptr<folly::IOBuf> serialize() {
+    const size_t totalSize = sizeof(uint32_t) + // message type
+                             sizeof(uint32_t) + // total length
+                             sizeof(uint32_t) + // version
+                             sizeof(int32_t);   // error
+
+    auto buf = folly::IOBuf::create(totalSize);
+    folly::io::Appender appender(buf.get(), 0);
+
+    appender.writeLE<uint32_t>(REMOUNT_RESULT);
+    appender.writeLE<uint32_t>(totalSize);
+    appender.writeLE<uint32_t>(1); // version
+
+    appender.writeLE<int32_t>(error);
+
+    return buf;
+  }
+
+  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
+    using dynamic = folly::dynamic;
+
+    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+      return false;
+    }
+
+    folly::io::Cursor cursor(buf.get());
+
+    int type = cursor.readLE<uint32_t>();
+    size_t len = cursor.readLE<uint32_t>();
+
+    if (buf->computeChainCapacity() < len) {
+      return false;
+    }
+
+    auto version = cursor.readLE<uint32_t>();
+    if (version > 1) {
+      return false;
+    }
+
+    if (type != REMOUNT_RESULT) {
+      return false;
+    }
+
     error = cursor.readLE<int32_t>();
 
     return true;
