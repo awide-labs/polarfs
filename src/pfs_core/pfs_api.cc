@@ -24,6 +24,8 @@
 
 #include <fcntl.h>
 
+#include "config.h"
+
 #include "pfs_api.h"
 #include "pfs_mount.h"
 #include "pfs_file.h"

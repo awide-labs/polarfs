@@ -19,7 +19,7 @@ message("compile pfsd for PostgreSQL")
 set(CMAKE_BUILD_TYPE "Release")
 #set(CMAKE_BUILD_TYPE "Debug")
 
-include(CMakeLists-config.txt)
+include(${CMAKE_SOURCE_DIR}/cmake/version.cmake)
 
 set(COMMON_FLAGS
   -fno-strict-aliasing

@@ -17,6 +17,7 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/src/trace/include/
     ${PROJECT_BINARY_DIR}/third-party/folly/
     ${PROJECT_SOURCE_DIR}/third-party/folly/
+    ${PROJECT_BINARY_DIR}/
     )
 
 set(SRC_LIST

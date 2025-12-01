@@ -8,9 +8,14 @@ usage() {
     cat <<EOF
 Usage:
 
-    $0 VERSION [RELEASE]
+    $0 [RELEASE]
 
-Build the source code and package it into polarfs-VERSION-RELEASE.rpm
+Build the source code and package it into polarfs-VERSION-RELEASE.rpm, where the
+VERSION string is composed of variables defined in the VERSION file in the root
+source directory and the optional RELEASE argument specifies the RPM release
+number.
+
+When not specified, RELEASE defaults to 1.
 EOF
 }
 
@@ -36,17 +41,21 @@ EOF
 }
 
 main() {
-    if [[ $# -lt 1 || $# -gt 2 ]]; then
+    if [[ $# -gt 1 ]]; then
            usage
            exit 1
     fi
 
     check_env
 
-    local -r version=$1
-    local -r release=${2:-"1"}
-
     cd "$SRC_ROOT"
+
+    # shellcheck disable=SC1091
+    source VERSION
+
+    local -r version="$VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH${VERSION_EXTRA:-}"
+
+    local -r release=${2:-"1"}
 
     ./autobuild.sh
 
@@ -54,6 +63,7 @@ main() {
     INSTALL_ROOT=install ./install.sh
 
     fpm -s dir -t rpm -n polarfs -v "$version" --iteration "$release" \
+        --log info \
         -d boost-context \
         -d boost-filesystem \
         -d boost-regex \
