@@ -434,11 +434,13 @@ pfsd_channel_init(pfsd_iochannel_t *ch)
 	ch->ch_magic = PFSD_SHM_MAGIC;
 
 	/* init free bitmap */
-	ch->ch_free_bitmap = 0;
-	for (int index = 0; index < ch->ch_max_req; ++index) {
-		ch->ch_free_bitmap |= (0x1UL << index);
-	}
+	ch->ch_free_bitmap = uint64_t(-1);
 
+	// for (int index = 0; index < ch->ch_max_req; ++index) {
+	// 	ch->ch_free_bitmap |= (0x1UL << index);
+	// }
+	//
+	//
 	for (int i = 0; i < ch->ch_max_req; ++i) {
 		ch->ch_requests[i].owner = PFSD_INVALID_PID;
 		ch->ch_requests[i].connid = -1;
