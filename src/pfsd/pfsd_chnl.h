@@ -21,7 +21,7 @@
 
 #define PFSD_MAX_SVR_ADDR_SIZE	4096
 #define PFSD_CONNECT_TIMEOUT_US	(3 * 1000000)
-#define CHNL_MAX_CONN		16
+#define CHNL_MAX_CONN		128
 
 typedef struct pfsd_connect_entry pfsd_connect_entry_t;
 

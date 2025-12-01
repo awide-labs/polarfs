@@ -34,7 +34,7 @@
 
 /* 1K, 8K, 16K, 64K, 256K, 1M, 4M*/
 #define PFSD_SHM_MAX (7)
-#define PFSD_WORKER_MAX (128)
+#define PFSD_WORKER_MAX (10 * 1024)
 
 #define PFSD_SHM_CHNL_DEFAULT (32)
 
