@@ -16,10 +16,6 @@ function(parse_version_file version_file)
         file(STRINGS "${version_file}" version_lines)
 
         foreach(line IN LISTS version_lines)
-            if(line MATCHES "^[ \t]*#" OR line STREQUAL "")
-                continue()
-            endif()
-
             if(line MATCHES "^VERSION_MAJOR=[0-9]+$")
                 string(REGEX REPLACE "^VERSION_MAJOR=([0-9]+)$" "\\1" VERSION_MAJOR "${line}")
                 set(VERSION_MAJOR "${VERSION_MAJOR}" PARENT_SCOPE)
