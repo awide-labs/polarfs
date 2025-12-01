@@ -54,6 +54,21 @@ main() {
     INSTALL_ROOT=install ./install.sh
 
     fpm -s dir -t rpm -n polarfs -v "$version" --iteration "$release" \
+        -d boost-context \
+        -d boost-filesystem \
+        -d boost-regex \
+        -d double-conversion \
+        -d fmt \
+        -d gflags \
+        -d glibc \
+        -d glog \
+        -d libaio \
+        -d libevent \
+        -d libgcc \
+        -d libicu \
+        -d libstdc++ \
+        -d libunwind \
+        -d python3
         --force \
         --description "Alibaba PolarFS distributed file system" \
         -C install etc/ usr/ var/
