@@ -23,6 +23,7 @@
 #include <search.h>
 #include <unistd.h>
 
+#include "dclcrwlock.h"
 #include "pfs_admin.h"
 #include "pfs_alloc.h"
 #include "pfs_devio.h"
@@ -64,7 +65,7 @@ typedef struct orphan_largefile_arg {
 typedef struct mountentry {
 	int			me_id;
 	int64_t			me_epoch;
-	pthread_rwlock_t	me_rwlock;
+	DCLCRWLock	me_rwlock;
 	pfs_mount_t		*me_mount;
 } mountentry_t;
 
@@ -80,7 +81,18 @@ init_pfs_mountentry()
 		me = &mount_entry[i];
 		me->me_epoch = 1;
 		me->me_id = i;
-		rwlock_init(&me->me_rwlock, NULL);
+		me->me_rwlock.init();
+	}
+}
+
+static void __attribute__((destructor))
+destroy_pfs_mountentry() {
+	int i;
+	mountentry_t *me;
+
+	for (i = 0; i < PFS_MAX_NMOUNT; i++) {
+		me = &mount_entry[i];
+		me->me_rwlock.destroy();
 	}
 }
 
@@ -93,19 +105,25 @@ pfs_init_failed(pfs_mount_t *mnt)
 inline void
 mountentry_rdlock(mountentry_t *me)
 {
-	rwlock_rdlock(&me->me_rwlock);
+	me->me_rwlock.lock_shared();
 }
 
 inline void
 mountentry_wrlock(mountentry_t *me)
 {
-	rwlock_wrlock(&me->me_rwlock);
+	me->me_rwlock.lock();
 }
 
 inline void
-mountentry_unlock(mountentry_t *me)
+mountentry_rdunlock(mountentry_t *me)
 {
-	rwlock_unlock(&me->me_rwlock);
+	me->me_rwlock.unlock_shared();
+}
+
+inline void
+mountentry_wrunlock(mountentry_t *me)
+{
+	me->me_rwlock.unlock();
 }
 
 inline void
@@ -144,7 +162,7 @@ again:
 			found = true;
 			break;
 		}
-		mountentry_unlock(me);
+		mountentry_rdunlock(me);
 	}
 	if (!found)
 		return NULL;
@@ -152,14 +170,14 @@ again:
 	if (lock == RW_RDLOCK)
 		return me;
 	if (lock == RW_NOLOCK) {
-		mountentry_unlock(me);
+		mountentry_rdunlock(me);
 		return me;
 	}
-	mountentry_unlock(me);
+	mountentry_rdunlock(me);
 	mountentry_wrlock(me);
 	if (condfunc(me, conddata))
 		return me;
-	mountentry_unlock(me);
+	mountentry_wrunlock(me);
 
 	goto again;
 }
@@ -761,7 +779,7 @@ remount:
 	    mnt->mnt_pbdname, mnt->mnt_host_id, mnt->mnt_flags);
 
 	mountentry_init(me, mnt);
-	mountentry_unlock(me);
+	mountentry_wrunlock(me);
 
 	/*
 	 * Only create adm thread for RDWR mount, but exclude PFSTOOL.
@@ -804,7 +822,7 @@ remount:
 	return err;
 
 finish_mount:
-	mountentry_unlock(me);
+	mountentry_wrunlock(me);
 	if (fd >= 0) {
 		/* For pfsd, paxos_hostid_local_unlock is moved up to SDK side*/
 		PFS_ASSERT(!pfs_ispfsd(mnt));
@@ -895,7 +913,7 @@ pfs_umount(const char *pbdname)
 	pfs_destroy_mount(mnt);
 
 	mountentry_fini(me);
-	mountentry_unlock(me);
+	mountentry_wrunlock(me);
 	return 0;
 }
 
@@ -922,7 +940,7 @@ pfs_get_mount_byid(int mntid)
 
 	mountentry_rdlock(me);
 	if (!me->me_mount) {
-		mountentry_unlock(me);
+		mountentry_rdunlock(me);
 		return NULL;
 	}
 
@@ -938,7 +956,7 @@ pfs_put_mount(pfs_mount_t *mnt)
 	PFS_ASSERT(mnt->mnt_id >= 0 && mnt->mnt_id < PFS_MAX_NMOUNT);
 	PFS_ASSERT(me->me_mount == mnt);
 
-	mountentry_unlock(me);
+	mountentry_rdunlock(me);
 }
 
 pfs_inode_t *
@@ -1955,7 +1973,7 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 	pfs_notify_inited(mnt);
 	pfs_itrace("after remount, PBD(%s), hostid(%d), mnt_flags(0x%x)\n",
 	    mnt->mnt_pbdname, mnt->mnt_host_id, mnt->mnt_flags);
-	mountentry_unlock(me);
+	mountentry_wrunlock(me);
 
 	mnt = pfs_get_mount(pbdname);
 	if (mnt == NULL) {
@@ -2251,7 +2269,7 @@ pfs_mount_release(const char *pbdname, int host_id)
 		    pbdname, host_id);
 	}
 	if (pfs_host_decref(host_id) != 0) {
-		mountentry_unlock(me);
+		mountentry_wrunlock(me);
 		mutex_unlock(&pfsd_mnt_shared_info_lock);
 		pfs_etrace("mount_release failed, PBD(%s), hostid(%d)\n",
 		    pbdname, host_id);
@@ -2287,7 +2305,7 @@ pfs_mount_release(const char *pbdname, int host_id)
 		umount_needed = true;
 
 	}
-	mountentry_unlock(me);
+	mountentry_wrunlock(me);
 	//Maybe it does not need umount now... so thread safe depends on
 	//mnt_shared_info_lock.
 	if (umount_needed) {
@@ -2344,7 +2362,7 @@ pfs_remount(const char *cluster, const char *pbdname, int host_id, int flags)
 	if (pfs_host_promot_ref(host_id) != 0) {
 		pfs_etrace("It can not remount to rw, host_id(%d)\n ",
 		    host_id);
-		mountentry_unlock(me);
+		mountentry_wrunlock(me);
 		mutex_unlock(&pfsd_mnt_shared_info_lock);
 		errno = EINVAL;
 		return  -1;
@@ -2353,11 +2371,11 @@ pfs_remount(const char *cluster, const char *pbdname, int host_id, int flags)
 	if (!pfs_need_promote_rw(mnt, flags)) {
 		pfs_etrace("It does not need remount to rw, flags(0x%x), but"
 		    " this is not an error \n ", mnt->mnt_flags);
-		mountentry_unlock(me);
+		mountentry_wrunlock(me);
 		mutex_unlock(&pfsd_mnt_shared_info_lock);
 		return 0;
 	}
-	mountentry_unlock(me);
+	mountentry_wrunlock(me);
 
 	ret = pfs_remount_rw(pbdname, host_id, flags);
 	if (ret < 0) {
