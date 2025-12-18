@@ -175,6 +175,16 @@ struct SharedMemoryPools {
     return rv;
   }
 
+  void clear() {
+    pools_.clear();
+    poolIds_.clear();
+    rawBuffers_.clear();
+    rawBufferIds_.clear();
+    poolIndexById_.clear();
+    poolSizeIndices_.clear();
+    nextId_ = 0;
+  }
+
 private:
   /**
    * Builds a mapping from pool element size expressed as pow2 in KiB

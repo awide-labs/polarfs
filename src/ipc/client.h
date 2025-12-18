@@ -109,6 +109,7 @@ public:
     evb_.runInEventBaseThread([this] { socket_->close(); });
     evb_.terminateLoopSoon();
     eventLoopThread_.join();
+    pools_.clear();
     return true;
   }
 
@@ -279,10 +280,10 @@ private:
     *len = sizeof(transferBuf_);
   }
 
-  void readDataAvailable(size_t len) noexcept override {
-    PFSD_CLIENT_LOG("Client received: %zu bytes", len);
+  void readDataAvailable(size_t recvLen) noexcept override {
+    PFSD_CLIENT_LOG("Client received: %zu bytes", recvLen);
 
-    bufferQueue_.append(folly::IOBuf::copyBuffer(transferBuf_, len));
+    bufferQueue_.append(folly::IOBuf::copyBuffer(transferBuf_, recvLen));
 
     while (bufferQueue_.chainLength() > 0) {
       int type;

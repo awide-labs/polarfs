@@ -15,6 +15,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - Implement `pfsd_fsync()` and `pfs_fsync()` support for block device backend (XCOM-50)
 - Fix IO buffer allocation bug in libpfsd leading to replication breaks in PolarDB (XCOM-56)
+- Fix shared memory not being cleaned up during `pfsd_umount()`
 
 ## [2.0.0] - 2025-08-11
 

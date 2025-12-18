@@ -250,6 +250,11 @@ private:
       }
 
       pfsd_info("Got message type: %d len: %zu", type, len);
+
+      if (bufferQueue_.chainLength() < len) {
+        break;
+      }
+
       auto iobuf = bufferQueue_.split(len);
 
       if (type == REGISTER_BUFFERS) {
