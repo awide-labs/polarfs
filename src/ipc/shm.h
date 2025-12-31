@@ -67,7 +67,7 @@ struct SharedMemoryPools {
     // Calculate the power of two exponent (log2) of the requested size in KiB
     const size_t sizeKiB = (size + 1023) / 1024;
     const size_t roundSize = folly::nextPowTwo(sizeKiB);
-    const unsigned bucket = folly::findLastSet(sizeKiB) - 1;
+    const unsigned bucket = folly::findLastSet(roundSize) - 1;
 
     // We don't have a pool capable to serve allocations this large
     if (bucket >= poolSizeIndices_.size()) {
