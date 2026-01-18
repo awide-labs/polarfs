@@ -13,16 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -e
+
 BASE_DIR=$(cd "$(dirname "$0")"; pwd)
-cd $BASE_DIR
+cd "$BASE_DIR"
 
 echo -e "\033[33m begin compile pfsdaemon|pfs|libpfs.a|libpfsd.a \033[0m"
 mkdir -p build
 pushd build
-cmake ../ && make -j128
+cmake ../ && make -j$(nproc)
 popd
 
 echo -e "\033[33m end compile, binary's in ./bin, library's in ./lib \033[0m"
-
-
 

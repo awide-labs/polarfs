@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      build_docker_images:
+        description: 'Force rebuild all Docker images'
+        required: false
+        default: 'false'
+        type: boolean
+      build_package:
+        description: 'Build package'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-docker-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.build_docker_images == 'true')
+    steps:
+      - name: Check for Dockerfile changes
+        id: check
+        run: |
+          # Force build if triggered via workflow_dispatch with build_docker_images
+          if [[ "${{ github.event.inputs.build_docker_images }}" == "true" ]]; then
+            echo "Force build requested"
+            echo "changed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # Check if any Dockerfile* in docker/builder/ was modified or added
+          CHANGED_FILES='${{ toJson(github.event.commits[0].modified) }} ${{ toJson(github.event.commits[0].added) }}'
+          if echo "$CHANGED_FILES" | grep -q 'docker/builder/Dockerfile'; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout code
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        if: steps.check.outputs.changed == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push Docker images
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          # Iterate through all Dockerfile.* files in docker/builder/
+          for dockerfile in docker/builder/Dockerfile.*; do
+            [ -f "$dockerfile" ] || continue
+            # Image name is the Dockerfile suffix (e.g., Dockerfile.ubuntu:22.04 -> ubuntu:22.04)
+            IMAGE_NAME="${dockerfile#docker/builder/Dockerfile.}"
+            echo "Building $IMAGE_NAME from $dockerfile"
+            docker build -t "$IMAGE_NAME" -f "$dockerfile" .
+            docker tag "$IMAGE_NAME" "ghcr.io/awydex/pfs-build-${IMAGE_NAME}"
+            docker push "ghcr.io/awydex/pfs-build-${IMAGE_NAME}"
+          done
+
+  # Determine which images to build based on branch
+  set-matrix:
+    name: Set Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix for master branch
+        id: set-matrix
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+            echo 'matrix={"include":[{"image":"rockylinux:9","dockerfile":"Dockerfile.rockylinux:9"},{"image":"rockylinux:10","dockerfile":"Dockerfile.rockylinux:10"},{"image":"ubuntu:22.04","dockerfile":"Dockerfile.ubuntu:22.04"},{"image":"ubuntu:latest","dockerfile":"Dockerfile.ubuntu:latest"}]}' >> $GITHUB_OUTPUT
+          else
+            echo 'matrix={"include":[{"image":"rockylinux:9","dockerfile":"Dockerfile.rockylinux:9"},{"image":"ubuntu:latest","dockerfile":"Dockerfile.ubuntu:latest"}]}' >> $GITHUB_OUTPUT
+          fi
+
+  test:
+    name: Test (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    needs: [set-matrix, build-docker-images]
+    if: |
+      always() && !cancelled() &&
+      needs.build-docker-images.result != 'failure' &&
+      (github.event_name == 'push' || github.event_name == 'pull_request')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull builder image
+        run: |
+          docker pull "ghcr.io/awydex/pfs-build-${{ matrix.image }}" || {
+            echo "Error: Builder image not found in registry. Run build-docker-images first."
+            exit 1
+          }
+          docker tag "ghcr.io/awydex/pfs-build-${{ matrix.image }}" "${{ matrix.image }}"
+
+      - name: Build
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/polarfs \
+            -w /polarfs \
+            ${{ matrix.image }} \
+            ./autobuild.sh
+
+  package:
+    name: Package (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    needs: [set-matrix, build-docker-images]
+    if: |
+      always() && !cancelled() &&
+      needs.build-docker-images.result != 'failure' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.build_package == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull builder image
+        run: |
+          docker pull "ghcr.io/awydex/pfs-build-${{ matrix.image }}" || {
+            echo "Error: Builder image not found in registry. Run build-docker-images first."
+            exit 1
+          }
+          docker tag "ghcr.io/awydex/pfs-build-${{ matrix.image }}" "${{ matrix.image }}"
+
+      - name: Build package
+        id: build
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/polarfs \
+            -w /polarfs \
+            ${{ matrix.image }} \
+            ./.ci/ci-package.sh
+          # Create artifact-safe name (replace : with -)
+          echo "artifact_name=packages-${IMAGE_NAME//:/-}" >> $GITHUB_OUTPUT
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: polarfs[-_]*.*
+          retention-days: 1
+          if-no-files-found: ignore

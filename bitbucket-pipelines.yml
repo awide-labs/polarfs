@@ -1,0 +1,216 @@
+image: docker:latest
+
+x-step-common: &step-common
+  image: docker:latest
+  size: 2x
+  services:
+    - docker
+  caches:
+    - docker
+  variables:
+    DOCKER_REGISTRY: crg.apkg.io/awydex
+
+x-step-package: &step-package
+  image: docker:latest
+  size: 2x
+  services:
+    - docker
+  caches:
+    - docker
+  variables:
+    DOCKER_REGISTRY: crg.apkg.io/awydex
+
+x-prepare-builder: &prepare-builder |
+  apk add --no-cache git
+  git submodule update --init --recursive
+  export DOCKER_REGISTRY="${DOCKER_REGISTRY:-crg.apkg.io/awydex}"
+  if [ -n "$API_TOKEN" ] && [ -n "$DOCKER_USER" ]; then
+    echo "$API_TOKEN" | docker login "$DOCKER_REGISTRY" --username "$DOCKER_USER" --password-stdin
+  fi
+  echo "Pulling builder image from registry..."
+  docker pull "${DOCKER_REGISTRY}/pfs-build-${BUILDER_IMAGE}" || {
+    echo "Error: Builder image not found in registry. Run build-docker-images first."
+    exit 1
+  }
+  docker tag "${DOCKER_REGISTRY}/pfs-build-${BUILDER_IMAGE}" "$BUILDER_IMAGE"
+
+x-build-script: &build-script |
+  docker run --rm \
+    -v $(pwd):/polarfs \
+    -w /polarfs \
+    "$BUILDER_IMAGE" \
+    ./autobuild.sh
+
+x-package-script: &package-script |
+  docker run --rm \
+    -v $(pwd):/polarfs \
+    -w /polarfs \
+    "$BUILDER_IMAGE" \
+    ./.ci/ci-package.sh
+
+definitions:
+  services:
+    docker:
+      memory: 7128
+  steps:
+    - step: &build-docker-images
+        name: Build Docker Images
+        image: docker:latest
+        services:
+          - docker
+        caches:
+          - docker
+        variables:
+          DOCKER_REGISTRY: crg.apkg.io/awydex
+        script:
+          - apk add --no-cache git
+          - |
+            export DOCKER_REGISTRY="${DOCKER_REGISTRY:-crg.apkg.io/awydex}"
+            if [ -z "$API_TOKEN" ] || [ -z "$DOCKER_USER" ]; then
+              echo "Error: API_TOKEN and DOCKER_USER must be set to push images"
+              exit 1
+            fi
+            echo "$API_TOKEN" | docker login "$DOCKER_REGISTRY" --username "$DOCKER_USER" --password-stdin
+            # Iterate through all Dockerfile.* files in docker/builder/
+            for dockerfile in docker/builder/Dockerfile.*; do
+              [ -f "$dockerfile" ] || continue
+              # Image name is the Dockerfile suffix (e.g., Dockerfile.ubuntu:22.04 -> ubuntu:22.04)
+              IMAGE_NAME="${dockerfile#docker/builder/Dockerfile.}"
+              echo "Building $IMAGE_NAME from $dockerfile"
+              DOCKER_BUILDKIT=0 docker build -t "$IMAGE_NAME" -f "$dockerfile" .
+              docker tag "$IMAGE_NAME" "${DOCKER_REGISTRY}/pfs-build-${IMAGE_NAME}"
+              docker image push "${DOCKER_REGISTRY}/pfs-build-${IMAGE_NAME}"
+            done
+        condition:
+          changesets:
+            includePaths:
+              - "docker/builder/Dockerfile.*"
+
+    # Rocky 9 build
+    - step: &build-rocky-9
+        <<: *step-common
+        name: Build (Rocky 9)
+        script:
+          - export BUILDER_IMAGE="rockylinux:9"
+          - *prepare-builder
+          - *build-script
+
+    # Rocky 10 build
+    - step: &build-rocky-10
+        <<: *step-common
+        name: Build (Rocky 10)
+        script:
+          - export BUILDER_IMAGE="rockylinux:10"
+          - *prepare-builder
+          - *build-script
+
+    # Ubuntu 22.04 build
+    - step: &build-ubuntu-22.04
+        <<: *step-common
+        name: Build (Ubuntu 22.04)
+        script:
+          - export BUILDER_IMAGE="ubuntu:22.04"
+          - *prepare-builder
+          - *build-script
+
+    # Ubuntu latest build
+    - step: &build-ubuntu-latest
+        <<: *step-common
+        name: Build (Ubuntu latest)
+        script:
+          - export BUILDER_IMAGE="ubuntu:latest"
+          - *prepare-builder
+          - *build-script
+
+    # Rocky 9 package
+    - step: &package-rocky-9
+        <<: *step-package
+        name: Package (Rocky 9)
+        script:
+          - export BUILDER_IMAGE="rockylinux:9"
+          - *prepare-builder
+          - *package-script
+        artifacts:
+          - polarfs*.rpm
+
+    # Rocky 10 package
+    - step: &package-rocky-10
+        <<: *step-package
+        name: Package (Rocky 10)
+        script:
+          - export BUILDER_IMAGE="rockylinux:10"
+          - *prepare-builder
+          - *package-script
+        artifacts:
+          - polarfs*.rpm
+
+    # Ubuntu 22.04 package
+    - step: &package-ubuntu-22.04
+        <<: *step-package
+        name: Package (Ubuntu 22.04)
+        script:
+          - export BUILDER_IMAGE="ubuntu:22.04"
+          - *prepare-builder
+          - *package-script
+        artifacts:
+          - polarfs*.deb
+
+    # Ubuntu latest package
+    - step: &package-ubuntu-latest
+        <<: *step-package
+        name: Package (Ubuntu latest)
+        script:
+          - export BUILDER_IMAGE="ubuntu:latest"
+          - *prepare-builder
+          - *package-script
+        artifacts:
+          - polarfs*.deb
+
+pipelines:
+  # Non-default branches: Rocky 9 + Ubuntu latest only
+  default:
+    - parallel:
+        - step: *build-rocky-9
+        - step: *build-ubuntu-latest
+
+  # Master branch: All images
+  branches:
+    'master':
+      - parallel:
+          - step: *build-rocky-9
+          - step: *build-rocky-10
+          - step: *build-ubuntu-22.04
+          - step: *build-ubuntu-latest
+
+  custom:
+    build-docker-images:
+      - step: *build-docker-images
+    package:
+      - parallel:
+          - step: *package-rocky-9
+          - step: *package-rocky-10
+          - step: *package-ubuntu-22.04
+          - step: *package-ubuntu-latest
+    full:
+      - step: *build-docker-images
+      - parallel:
+          - step: *build-rocky-9
+          - step: *build-rocky-10
+          - step: *build-ubuntu-22.04
+          - step: *build-ubuntu-latest
+      - parallel:
+          - step: *package-rocky-9
+          - step: *package-rocky-10
+          - step: *package-ubuntu-22.04
+          - step: *package-ubuntu-latest
+
+  # Pull requests: Rocky 9 + Ubuntu latest only
+  pull-requests:
+    '**':
+      - parallel:
+          - step: *build-rocky-9
+          - step: *build-ubuntu-latest
+
+options:
+  docker: true
+  max-time: 60

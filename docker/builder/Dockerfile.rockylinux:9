@@ -1,0 +1,44 @@
+FROM rockylinux/rockylinux:9-minimal
+
+# Install build dependencies and clean up in a single layer to reduce image size
+RUN microdnf install -y dnf && \
+    dnf install -y epel-release && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y --enablerepo=devel --setopt=install_weak_deps=False \
+        gcc \
+        gcc-c++ \
+        cmake \
+        make \
+        git \
+        ca-certificates \
+        python3 \
+        ruby-devel \
+        libaio-devel \
+        boost-devel \
+        double-conversion-devel \
+        fmt-devel \
+        fuse-devel \
+        glog-devel \
+        gtest-devel \
+        libevent-devel \
+        libunwind-devel \
+        openssl-devel \
+        rpm-build \
+        rubygem-json && \
+    gem install fpm && \
+    # Build and install fast_float
+    cd /tmp && \
+    git clone --depth 1 https://github.com/fastfloat/fast_float.git && \
+    cd fast_float && \
+    mkdir build && cd build && \
+    cmake .. -DFASTFLOAT_TEST=OFF && \
+    cmake --build . -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    cd / && \
+    rm -rf /tmp/fast_float && \
+    # Clean up dnf cache and temporary files to reduce image size
+    dnf clean all && \
+    rm -rf /var/cache/dnf /tmp/* /var/tmp/*
+
+WORKDIR /polarfs
