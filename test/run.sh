@@ -47,6 +47,11 @@ echo "Creating ${TEST_IMAGE_SIZE_GB}GB test image file..."
 fallocate -l ${TEST_IMAGE_SIZE_GB}G "$TEST_IMAGE_FILE"
 
 echo "Attaching image to loop device..."
+# Create loop device node if it doesn't exist
+if [ ! -e "$TEST_LOOP_DEVICE" ]; then
+    LOOP_NUM="${TEST_LOOP_DEVICE##/dev/loop}"
+    mknod "$TEST_LOOP_DEVICE" b 7 "$LOOP_NUM" 2>/dev/null || true
+fi
 losetup -d "$TEST_LOOP_DEVICE" 2>/dev/null || true
 if ! losetup "$TEST_LOOP_DEVICE" "$TEST_IMAGE_FILE"; then
     echo "Error: Failed to attach image to loop device"
