@@ -28,7 +28,7 @@ Refs: <reference>[, <reference>...]
 
 - **Header (first line)**: Must be 72 characters or less
 - **Body lines**: Each line must be 72 characters or less
-- **Refs footer**: Mandatory - must contain a comma-separated list of issue references (e.g., `Refs: PROJ-1234` or `Refs: PROJ-1234, PROJ-5678`)
+- **Refs footer**: Mandatory - must contain a comma-separated list of issue references (e.g., `Refs: PROJ-1234` or `Refs: PROJ-1234, PROJ-5678`). Only one `Refs:` footer is allowed per commit
 
 ### Valid Types
 
@@ -46,6 +46,27 @@ Refs: <reference>[, <reference>...]
 | `chore` | Other changes that don't modify src or test files |
 | `revert` | Reverts a previous commit |
 
+### Optional Footers
+
+In addition to the mandatory `Refs:` footer, you may include other optional
+footers following the Conventional Commits specification. Common examples
+include:
+- `Skip-changelog: true` - Skip changelog requirement (see Changelog section)
+- `See: <URL>` - Reference to external documentation, RFCs, or related
+  resources
+- `Discussion: <URL>` - Link to discussion related to this particular commit, e.g. mailing list discussion
+
+All footers must follow the `token: value` format and are exempt from the
+72-character line length limit.
+
+### Exemptions
+
+- **Merge commits**: Automatically generated merge commits are exempt from
+  Conventional Commits validation
+- **Commits brought by merges**: All commits that are brought in by merge
+  commits (e.g., when merging from upstream) are also exempt from validation,
+  as we have no control over their commit message format
+
 ### Examples
 
 ```
@@ -62,6 +83,36 @@ fix: resolve memory leak in cache handler
 The cache was not properly releasing resources on cleanup.
 
 Refs: PROJ-5678, PROJ-5679
+```
+
+```
+docs: update installation instructions
+
+Refs: PROJ-9012
+```
+
+```
+perf: optimize index scan for large tables
+
+Use bitmap index scans instead of sequential scans for queries with
+large result sets. This improves query performance by reducing I/O
+operations and memory usage.
+
+Refs: PROJ-3456
+See: https://www.postgresql.org/docs/current/indexes-bitmap-scans.html
+```
+
+**Example with Skip-changelog footer:**
+
+```
+fix: resolve internal deadlock in test suite
+
+This fixes a deadlock condition that only occurs in the test
+environment and does not affect production. The issue was caused by
+improper lock ordering during parallel test execution.
+
+Skip-changelog: true
+Refs: PROJ-7890
 ```
 
 ## Changelog Requirements
@@ -85,6 +136,20 @@ We follow the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. A
 - **Removed** - for now removed features
 - **Fixed** - for any bug fixes
 - **Security** - in case of vulnerabilities
+- **Performance**: performance improvements (our extension to Keep a Changelog)
+
+### Example
+
+```markdown
+## [Unreleased]
+
+### Added
+- New configuration parameter `polar_enable_parallel_ddl`
+
+### Performance
+- Optimized index creation for large tables
+- Reduced memory usage in query planner
+```
 
 ### Skipping Changelog Updates
 
