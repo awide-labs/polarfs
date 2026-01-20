@@ -138,17 +138,36 @@ We follow the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. A
 - **Security** - in case of vulnerabilities
 - **Performance**: performance improvements (our extension to Keep a Changelog)
 
+### Entry Format
+
+Each changelog entry (paragraph starting with `- ` at the first column) must end with a Jira issue reference in the format `(PROJ-NNNN)`, optionally followed by `.` or `:`. This is enforced by CI checks.
+
+**Valid examples:**
+
+```markdown
+- Add new configuration parameter `polar_enable_parallel_ddl` (PROJ-1234)
+
+- Reduce contention on the flush list on RW node by splitting it into multiple
+  partitions (currently 64), with each partition having its own own lock,
+  control structure and statistics (PROJ-5678)
+
+- The following third-party extensions have been removed (PROJ-9012):
+  - hll
+  - log_fdw
+  - pase
+```
+
 ### Example
 
 ```markdown
 ## [Unreleased]
 
 ### Added
-- New configuration parameter `polar_enable_parallel_ddl`
+- New configuration parameter `polar_enable_parallel_ddl` (PROJ-1234)
 
 ### Performance
-- Optimized index creation for large tables
-- Reduced memory usage in query planner
+- Optimized index creation for large tables (PROJ-2345)
+- Reduced memory usage in query planner (PROJ-3456)
 ```
 
 ### Skipping Changelog Updates
