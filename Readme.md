@@ -108,6 +108,10 @@ The **doc** folder includes the following file:
 - [PFS_Tools-EN.md](docs/PFS_Tools-EN.md): user manual about the commands of PFS
  tool.
 
+# Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to this project.
+
 # Software License
 PFS is developed based on[ the open source software license Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 # Publications

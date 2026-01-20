@@ -25,6 +25,30 @@ permissions:
   packages: write
 
 jobs:
+  check-commit-format:
+    name: Check Commit Format
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit format
+        run: .ci/check_commit_format.sh origin/${{ github.base_ref }}
+
+  check-changelog:
+    name: Check Changelog
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check changelog
+        run: .ci/check_changelog.sh origin/${{ github.base_ref }}
+
   build-docker-images:
     name: Build Docker Images
     runs-on: ubuntu-latest

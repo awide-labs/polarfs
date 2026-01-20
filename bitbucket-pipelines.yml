@@ -4,7 +4,7 @@ x-step-common: &step-common
   image: docker:latest
   size: 2x
   services:
-    - docker
+    - docker-large
   caches:
     - docker
   variables:
@@ -14,7 +14,7 @@ x-step-package: &step-package
   image: docker:latest
   size: 2x
   services:
-    - docker
+    - docker-large
   caches:
     - docker
   variables:
@@ -51,13 +51,34 @@ x-package-script: &package-script |
 definitions:
   services:
     docker:
+      memory: 3072
+    docker-large:
+      type: docker
       memory: 7128
   steps:
+    # Lint steps (minimal resources, no docker service needed)
+    - step: &check-commit-format
+        name: Check Commit Format
+        image: atlassian/default-image:3
+        size: 1x
+        script:
+          - git fetch origin ${BITBUCKET_PR_DESTINATION_BRANCH}
+          - .ci/check_commit_format.sh origin/${BITBUCKET_PR_DESTINATION_BRANCH}
+
+    - step: &check-changelog
+        name: Check Changelog
+        image: atlassian/default-image:3
+        size: 1x
+        script:
+          - git fetch origin ${BITBUCKET_PR_DESTINATION_BRANCH}
+          - .ci/check_changelog.sh origin/${BITBUCKET_PR_DESTINATION_BRANCH}
+
     - step: &build-docker-images
         name: Build Docker Images
         image: docker:latest
+        size: 2x
         services:
-          - docker
+          - docker-large
         caches:
           - docker
         variables:
@@ -208,8 +229,8 @@ pipelines:
   pull-requests:
     '**':
       - parallel:
-          - step: *build-rocky-9
-          - step: *build-ubuntu-latest
+          - step: *check-commit-format
+          - step: *check-changelog
 
 options:
   docker: true
