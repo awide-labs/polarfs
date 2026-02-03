@@ -406,7 +406,7 @@ _pfsd_pwrite_svr(pfs_mount_t *mnt, pfs_inode_t *in, int flags, const void *buf,
 	if (len == 0)
 		return 0;
 
-	if ((size_t)(OFF_MAX - offset) < len)
+	if (offset > 0 && (size_t)(OFF_MAX - offset) < len)
 		return -EFBIG;
 
 	err = pfsd_file_xfallocate(mnt, in, offset, len, FALLOC_FL_KEEP_SIZE,
@@ -909,7 +909,7 @@ pfsd_file_fsync(pfs_mount_t *mnt, pfs_inode_t *in [[maybe_unused]], uint64_t bti
 int
 pfsd_fsync_svr(pfs_mount_t *mnt, pfs_inode_t *in, uint64_t btime)
 {
-	assert (mnt && inode);
+	assert (mnt && in);
 
 	int err = -EAGAIN;
 
