@@ -33,26 +33,6 @@ mkdir -p ${INSTALL_BASE_DIR}/pfs_core/lib
 mkdir -p "${INSTALL_ROOT}"/etc/init.d
 mkdir -p "${INSTALL_ROOT}"/usr/local/bin
 
-#check install
-if [ -f "${INSTALL_BASE_DIR}/pfsd/include/pfsd_sdk.h" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/lib/libpfsd.a" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/lib/libpfsd_test.so" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/bin/pfsdaemon" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/bin/pfs-fuse" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/conf/pfsd_logger.conf" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/bin/start_pfsd.sh" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/bin/stop_pfsd.sh" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/bin/mount_pfs_fuse.sh" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/bin/umount_pfs_fuse.sh" ] || \
-[ -f "${INSTALL_BASE_DIR}/pfsd/bin/clean_pfsd.sh" ] || \
-[ -f "${INSTALL_ROOT}/etc/init.d/pfsd_env" ] || \
-[ -f "${INSTALL_ROOT}/etc/polarfs.conf" ] || \
-[ -f "${INSTALL_ROOT}/usr/local/bin/pfs" ] || \
-[ -f "${INSTALL_ROOT}/usr/local/bin/pfsadm" ];then
-	echo "pfsd/fuse has installed, install failed"
-	exit 1
-fi
-
 if [ ! -f "src/pfs_sdk/pfsd_sdk.h" ] || \
 [ ! -f "lib/libpfsd.a" ] || \
 [ ! -f "lib/libpfsd_test.so" ] || \
