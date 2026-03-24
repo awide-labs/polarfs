@@ -42,6 +42,31 @@ EOF
     }
 }
 
+build_package() {
+    local package_type=$1
+    local version=$2
+    local release=$3
+
+    fpm -s dir -t "$package_type" -n polarfs -v "$version" --iteration "$release" \
+        --log info \
+        -d libboost-atomic1.74.0 \
+        -d libboost-context1.74.0 \
+        -d libboost-filesystem1.74.0 \
+        -d libboost-program-options1.74.0 \
+        -d libboost-regex1.74.0 \
+        -d libboost-system1.74.0 \
+        -d libboost-thread1.74.0 \
+        -d libdouble-conversion3 \
+        -d libfmt-dev \
+        -d libgoogle-glog-dev \
+        -d libgflags2.2 \
+        -d libaio1 \
+        -d python3 \
+        --force \
+        --description "Alibaba PolarFS distributed file system" \
+        -C install etc/ usr/ var/
+}
+
 main() {
     if [[ $# -gt 1 ]]; then
            usage
