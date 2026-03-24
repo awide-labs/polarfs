@@ -51,7 +51,7 @@ add_dependencies(pfsdaemon
     )
 
 if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64")
-    set(CXXFLAGS ${CXXFLAGS}  -march=native)
+    set(CXXFLAGS ${CXXFLAGS}  -march=x86-64-v3 -mtune=haswell)
 endif()
 
 target_link_libraries(pfsdaemon

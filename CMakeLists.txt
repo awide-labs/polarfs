@@ -45,7 +45,7 @@ set(COMMON_FLAGS
   )
 
 if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64")
-    set(COMMON_FLAGS ${COMMON_FLAGS}  -march=native -m64)
+    set(COMMON_FLAGS ${COMMON_FLAGS}  -march=x86-64-v3 -mtune=haswell -m64)
 endif()
 
 set(CMAKE_EXE_LINKER_FLAGS
