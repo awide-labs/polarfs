@@ -18,6 +18,8 @@
 
 #include <sys/queue.h>
 #include <pthread.h>
+#include <atomic>
+#include <time.h>
 
 #include "lib/dclcrwlock.h"
 #include "pfs_meta.h"
@@ -113,6 +115,11 @@ typedef struct pfs_mount {
 	uint32_t	mnt_num_hosts;		/* host info */
 	uint32_t	mnt_host_id;
 	uint64_t	mnt_host_generation;
+	uint64_t	mnt_current_ballot;	/* set during prepare, used through acquire+conflict */
+	std::atomic<bool>	mnt_rw_lease_held;	/* true after pfs_rw_lease_acquire() */
+	timer_t		mnt_kill_timer;		/* POSIX timer for lease watchdog */
+	bool		mnt_kill_timer_armed;
+	int		mnt_wdog_fd;		/* /dev/watchdog fd, -1 if disabled */
 
 	/* admin thread info */
 	admin_info_t    *mnt_admin;

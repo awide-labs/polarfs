@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Cross-host RW lease for shared-disk mutual exclusion, using a ballot-based
+  protocol inspired by sanlock delta leases. New `pfs lease` diagnostic command
+  (XCOM-90)
+
 ## [2.1.1] - 2026-03.24
 
 ### Fixed
@@ -54,6 +62,7 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
+[unreleased]: https://github.com/Awydex/polarfs/compare/896b394..master
 [2.1.1]: https://github.com/Awydex/polarfs/compare/3a3b0c6..896b394
 [2.1.0]: https://github.com/Awydex/polarfs/compare/d563a18..3a3b0c6
 [2.0.0]: https://github.com/Awydex/polarfs/compare/d0c5dc6..d563a18

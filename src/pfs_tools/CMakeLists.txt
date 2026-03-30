@@ -39,6 +39,7 @@ add_executable(pfs-tools
 	cmd_fscp.cc
 	cmd_fstrim.cc
 	cmd_info.cc
+	cmd_lease.cc
 	cmd_map.cc
 	cmd_mkdir.cc
 	cmd_mkfs.cc

@@ -489,6 +489,9 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 	    offsetof(pfs_inode_t, in_node));
 	mnt->mnt_host_id = host_id;
 	mnt->mnt_host_generation = 0;
+	mnt->mnt_rw_lease_held = false;
+	mnt->mnt_kill_timer_armed = false;
+	mnt->mnt_wdog_fd = -1;
 	mnt->mnt_num_hosts = 0;
 	mnt->mnt_paxos_file = NULL;
 	mnt->mnt_log.log_mount = mnt;
@@ -721,8 +724,8 @@ pfs_mount(const char *cluster, const char *pbdname, int host_id, int flags)
 	pfs_itrace("before mount, PBD(%s), hostid(%d), flags(0x%x)\n",
 	    pbdname, host_id, flags);
 
-	/* init pfs config from default path */
-	if (pfs_option_init(NULL) != CONFIG_OK)
+	/* init pfs config: PFS_CONFIG_PATH env overrides default /etc/polarfs.conf */
+	if (pfs_option_init(getenv("PFS_CONFIG_PATH")) != CONFIG_OK)
 		pfs_etrace("pfs init option config failed, use default value PBD(%s), hostid(%d), flags(0x%x)\n",
 		    pbdname, host_id, flags);
 remount:
@@ -2010,6 +2013,34 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 	 */
 	err = pfs_leader_load(mnt);
 	if (err < 0) {
+		if (err == -EBUSY) {
+			/*
+			 * Another host holds the RW lease.  Restore this
+			 * mount to RO so the caller receives a proper EBUSY
+			 * error without the process terminating.
+			 */
+			pfs_etrace("remount RW blocked by live RW lease holder, "
+			    "restoring RO mount\n");
+			pfs_leader_unload(mnt);
+			mnt->mnt_flags &= ~MNTFLG_WR;
+			if (pfs_leader_load(mnt) < 0) {
+				pfs_etrace("RO reload after EBUSY failed, "
+				    "unrecoverable\n");
+				exit(EIO);
+			}
+			pfs_log_resume(&mnt->mnt_log);
+			/*
+			 * The poll thread was stopped at the start of
+			 * pfs_remount_rw.  Do not restart it here — the mount
+			 * is being restored to RO only so the caller can
+			 * receive a proper EBUSY error and then call
+			 * pfs_umount/pfs_mount_release cleanly.
+			 * pfs_poll_stop in pfs_umount is safe when poll_tid=0.
+			 */
+			mountentry_wrunlock(me);
+			errno = EBUSY;
+			return -EBUSY;
+		}
 		pfs_etrace("load paxos file failed, err=%d\n", err);
 		exit(EIO);
 	}

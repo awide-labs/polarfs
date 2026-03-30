@@ -30,6 +30,7 @@
 #include "pfs_log.h"
 #include "pfs_mount.h"
 #include "pfs_option.h"
+#include "pfs_paxos.h"
 #include "pfs_tls.h"
 #include "pfs_trace.h"
 #include "pfs_tx.h"
@@ -525,11 +526,16 @@ pfs_log_paxos_expired(const pfs_log_t *log)
 static int
 pfs_log_paxos_try_acquire(pfs_log_t *log, pfs_leader_record_t **latestp)
 {
-	int rv = 0;
-
+	/*
+	 * For RW nodes, log_leader is the node's own authoritative state.
+	 * No disk read is needed here: we wrote it, we know it.
+	 * Lease renewal (dblock write) is handled independently every
+	 * log_paxos_lease seconds in pfs_log_thread_entry(), not on the
+	 * write path.
+	 */
 	log->log_leader_latest = log->log_leader;
 	*latestp = &log->log_leader_latest;
-	return rv;
+	return 0;
 }
 
 static int
@@ -1653,11 +1659,79 @@ pfs_log_thread_entry(void *arg)
 
 	pfs_itrace("log thread start\n");
 	swap_ts.tv_sec = 0;
+	struct timespec last_renew;
+	clock_gettime(CLOCK_REALTIME, &last_renew); /* lease just acquired */
 	for (i = 0; i < LOG_NMAX; i++)
 		TAILQ_INIT(&work_req[i]);
 
 	do {
 		clock_gettime(CLOCK_REALTIME, &ts);
+
+		/*
+		 * Periodic RW lease renewal.
+		 *
+		 * The log thread wakes every log_paxos_lease (default 1s) so
+		 * this runs at most once per second, independently of whether
+		 * there is any metadata write activity.  This prevents the
+		 * lease from expiring during idle workloads (e.g. pure data
+		 * overwrites) and keeps the renewal off the metadata-write
+		 * critical path.
+		 *
+		 * Renew in all states except LOGST_SUSPENDED:
+		 *
+		 * LOGST_NOTLOADED (journal replay): mnt_rw_lease_held is
+		 * already true and the lease must stay alive while we replay
+		 * journal entries.  Blocking renewal here makes the holder
+		 * look dead to other hosts' wait_and_check polls.
+		 *
+		 * LOGST_SUSPENDED: After pfs_log_suspend sends the SUSPEND
+		 * reply, the thread loops back here before blocking in
+		 * timedwait.  A renewal in SUSPENDED state races with
+		 * pfs_leader_unload's zero-write (pfs_remount_ro / pfs_umount)
+		 * and can leave the sector non-zero after the intended clear.
+		 * The renewal in the same iteration as the SUSPEND handler
+		 * (still SERVING) completes before the reply is sent.
+		 *
+		 * LOGST_STOP: mnt_rw_lease_held is false by the time STOP is
+		 * processed (pfs_leader_unload ran first), so the second
+		 * condition already guards it.
+		 */
+		if (log->log_state != LOGST_SUSPENDED &&
+		    log->log_mount->mnt_rw_lease_held &&
+		    ts.tv_sec - last_renew.tv_sec >= log_paxos_lease) {
+			int renew_rv = pfs_rw_lease_renew(log->log_mount);
+			if (renew_rv == 0) {
+				paxos_watchdog_pet(log->log_mount);
+				last_renew = ts; /* advance only on success */
+			} else {
+				int64_t stale = ts.tv_sec - last_renew.tv_sec;
+				pfs_etrace("RW lease renewal failed rv=%d "
+				    "pbd=%s host_id=%u "
+				    "(last success %llds ago, expires at %llds)\n",
+				    renew_rv,
+				    log->log_mount->mnt_pbdname,
+				    log->log_mount->mnt_host_id,
+				    (long long)stale,
+				    (long long)pfs_paxos_lease_duration());
+				/*
+				 * Watchdog (if enabled) fires automatically
+				 * because we stopped petting it above.
+				 * Without a watchdog, self-fence by aborting
+				 * once the lease window has elapsed — at that
+				 * point another host is allowed to mount RW
+				 * and continuing to run risks split-brain
+				 * writes.
+				 */
+				if (stale >= pfs_paxos_lease_duration()) {
+					pfs_etrace("fatal: RW lease expired "
+					    "pbd=%s host_id=%u, "
+					    "aborting to prevent split-brain\n",
+					    log->log_mount->mnt_pbdname,
+					    log->log_mount->mnt_host_id);
+					abort();
+				}
+			}
+		}
 
 		/* TRIM_SWAP_CHECKPOINT */
 		if ((reqmask & LOG_BIT_TRIM) && TAILQ_EMPTY(&work_req[0])

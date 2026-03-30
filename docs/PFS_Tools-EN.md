@@ -10,6 +10,7 @@ The PFS tool is used only for debugging and testing. This document describes the
 | info | Queries the metadata of the file system on a disk. | None. |
 | dumpfs | Queries the metadata that is stored in one chunk or all chunks on a disk from the super blocks of these chunks. | `-m`: queries the metadata that is stored in one chunk or all chunks on the disk. If you do not configure this option, the system returns the headers of these chunks.<br>`-t`: specifies the type of metadata that you want to query.<br>`-c`: specifies the ID of the chunk whose metadata you want to query.<br>`-o`: specifies the serial number of the Metadata object that you want to query. |
 | dumple | Queries the log entries of the journal file on a disk. | `-a`: traverses all visible log entries of the journal file.<br>`-t`: specifies the ID of the log entry that you want to query.<br>`-b`: specifies the serial number of the block tag whose log entries you want to query.<br>`-d`: specifies the serial number of the directory entry whose log entries you want to query.<br>`-i`: specifies the serial number of the inode whose log entries you want to query. |
+| lease | Shows the RW lease status for all hosts on a disk. | None. |
 
 ## 1.2 mkfs
 
@@ -201,6 +202,36 @@ $sudo pfs -C disk dumple -t 2 -i 2048 nvme1n1
     in_mtime   1551337605
 [PFS_LOG] Mar  6 15:32:03.101423 INF [105651] number of log entries hit:1 / 6 (valid)
 ```
+
+## 1.7 lease
+
+- Description: This command is used to show the RW lease status for all hosts on a disk. It displays which host (if any) currently holds the cross-host RW lease, along with lease age, expiry countdown, ballot numbers, and generation counters.
+- Options: None.
+- Examples:
+
+```bash
+# Show RW lease status for the nvme1n1 disk.
+$sudo pfs -C disk lease nvme1n1
+=== RW Lease Status for nvme1n1 ===
+lease_duration: 30s
+current_time:   1774095239 (2026-03-21 14:13:59)
+num_hosts:      30
+max_hosts:      254
+
+host 1    flags=RW          gen=3     ballot=91
+          timestamp=1774095238 (2026-03-21 14:13:58)  age=1s
+          STATUS: ** ACTIVE RW HOLDER (expires in 29s) **
+```
+
+- Output fields:
+   - `lease_duration`: the configured lease duration in seconds (from `paxos_lease_duration`).
+   - `flags`: `RW` indicates the host holds or held an RW lease; `PREPARE` indicates the host is in the ballot prepare phase.
+   - `gen`: mount generation counter (increments on crash, resets on clean unmount).
+   - `ballot`: Paxos ballot number used for arbitration.
+   - `timestamp`: epoch seconds of the last lease renewal (`CLOCK_REALTIME`).
+   - `age`: seconds since the last renewal.
+   - `STATUS`: `ACTIVE RW HOLDER` with expiry countdown if the lease is live, `expired` with age if stale, or `prepare phase` if in ballot negotiation.
+   - Empty host sectors (never used or cleanly released) are omitted.
 
 # 2. File&Directory-Related Commands
 

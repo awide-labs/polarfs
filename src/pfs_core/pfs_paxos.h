@@ -16,6 +16,9 @@
 #ifndef	_PFS_PAXOS_H_
 #define	_PFS_PAXOS_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 typedef struct pfs_mount 		pfs_mount_t;
 
 #define NAME_ID_SIZE 			48
@@ -84,5 +87,53 @@ void	paxos_hostid_local_unlock(int fd);
 
 int read_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr,
 		uint32_t *checksum);
+
+/* ---- per-host RW lease record (one per sector, sector = host_id) ---- */
+
+#define PFS_HOST_MAGIC		0xcafebabe
+#define PFS_HOST_FL_RW		0x00000001
+#define PFS_HOST_FL_PREPARE	0x00000002
+
+/* Error codes for host record I/O */
+#define PFS_HOST_EMAGIC		-241
+#define PFS_HOST_ECHECKSUM	-242
+
+#define HOST_CHECKSUM_LEN	offsetof(pfs_host_record_t, hr_checksum)
+
+#define PFS_HOST_RECORD_UNUSED	\
+    (512 - sizeof(uint32_t)*4 - sizeof(uint64_t)*3 - sizeof(uint32_t))
+
+typedef struct pfs_host_record {
+	uint32_t hr_magic;	  /* PFS_HOST_MAGIC or 0 if empty */
+	uint32_t hr_flags;	  /* PFS_HOST_FL_RW, PFS_HOST_FL_PREPARE */
+	uint32_t hr_host_id;	  /* 1..max_hosts */
+	uint32_t hr_generation;	  /* mount epoch: prev+1 after crash, 1 after clean start */
+	uint64_t hr_timestamp;	  /* CLOCK_REALTIME seconds of last renewal */
+	uint64_t hr_mbal;	  /* highest ballot promised (Phase 1 prepare) */
+	uint64_t hr_bal;	  /* ballot of accepted/acquired lease (Phase 2) */
+	uint8_t  hr_unused[PFS_HOST_RECORD_UNUSED];
+	uint32_t hr_checksum;	  /* crc32c of all bytes before this field */
+} pfs_host_record_t;		  /* exactly 512 bytes */
+
+static_assert(sizeof(pfs_host_record_t) == 512,
+    "pfs_host_record_t must be exactly 512 bytes");
+
+int64_t	pfs_paxos_lease_duration(void);
+int	pfs_rw_lease_prepare(pfs_mount_t *mnt);
+int	pfs_rw_lease_verify_prepare(pfs_mount_t *mnt);
+int	pfs_rw_lease_acquire(pfs_mount_t *mnt);
+int	pfs_rw_lease_write_foreign(pfs_mount_t *mnt, uint32_t foreign_hostid);
+int	pfs_rw_lease_write_foreign_prepare(pfs_mount_t *mnt,
+	    uint32_t foreign_hostid, uint32_t generation);
+int	pfs_write_raw_host_sector(pfs_mount_t *mnt, uint32_t host_id,
+	    const void *src, size_t srclen);
+int	pfs_host_record_read(pfs_mount_t *mnt, uint32_t host_id,
+	    pfs_host_record_t *hr_ret);
+int	pfs_check_host_sector(pfs_mount_t *mnt, uint32_t host_id);
+int	pfs_rw_lease_renew(pfs_mount_t *mnt);
+void	pfs_rw_lease_release(pfs_mount_t *mnt);
+void	paxos_watchdog_open(pfs_mount_t *mnt);
+void	paxos_watchdog_pet(pfs_mount_t *mnt);
+void	paxos_watchdog_close(pfs_mount_t *mnt);
 
 #endif

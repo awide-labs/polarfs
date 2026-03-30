@@ -57,3 +57,12 @@ target_link_libraries(pfsd_perftest
     pfs
     folly
 )
+
+add_executable(pfs_lease_hold
+    pfs_lease_hold.cc
+)
+
+target_link_libraries(pfs_lease_hold
+    pfs
+    folly
+)

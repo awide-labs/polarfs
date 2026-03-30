@@ -36,7 +36,27 @@
 #include "pfs_trace.h"
 #include "pfs_namei.h"
 
+#include "pfs_paxos.h"
 #include "cmd_impl.h"
+
+static const char *
+pfs_mount_strerror(int err)
+{
+	switch (err) {
+	case PFS_LEADER_EMAGIC:      return "bad leader magic";
+	case PFS_LEADER_EVERSION:    return "bad leader version";
+	case PFS_LEADER_ESECTORSIZE: return "sector size mismatch";
+	case PFS_LEADER_ENUMHOSTS:   return "host_id exceeds num_hosts (check -H flag)";
+	case PFS_LEADER_ECHECKSUM:   return "leader checksum mismatch";
+	case -ENODEV:  return "device not found";
+	case -ENOMEM:  return "out of memory";
+	case -EIO:     return "I/O error";
+	case -EINVAL:  return "invalid argument";
+	case -EPERM:   return "permission denied";
+	case -EBUSY:   return "device busy (RW lease held by another host)";
+	default:       return strerror(-err);
+	}
+}
 
 vfs_mgr pfs;
 
@@ -1032,8 +1052,16 @@ main(int argc, char *argv[])
 			    co.co_common.hostid, PFS_TOOL|ci->cmd_mnt_flags);
 	}
 	proc_info_record(argc + optind, argv - optind);
-	if (err < 0)
+	if (err < 0) {
+		/*
+		 * pfs_mount() returns -1 and stores the real error code
+		 * (positive) in errno.  Negate it back for our helpers.
+		 */
+		int merr = -(int)errno;
+		printf("pfs %s: mount %s failed: %s (err=%d)\n",
+		    ci->cmd_name, pbdname, pfs_mount_strerror(merr), merr);
 		return -1;
+	}
 
 	err = (*ci->cmd_entry)(argc, argv, &co);
 	if (err < 0) {

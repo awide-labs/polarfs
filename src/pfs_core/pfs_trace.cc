@@ -141,6 +141,7 @@ pfs_vtrace(int level, const char *fmt, ...)
 	};
 
 	struct timeval tv;
+	struct timespec mono;
 	struct tm tm;
 	uint64_t ti;
 	int len;
@@ -153,11 +154,13 @@ pfs_vtrace(int level, const char *fmt, ...)
 	buf = pfs_trace_buf[ti].tb_trace;
 
 	gettimeofday(&tv, NULL);
+	clock_gettime(CLOCK_MONOTONIC, &mono);
 	localtime_r(&tv.tv_sec, &tm);
 	len = snprintf(buf, PFS_TRACE_LEN, "[PFS_LOG] "
-	    "%.3s%3d %.2d:%.2d:%.2d.%06ld %s [%ld] ",
+	    "%.3s%3d %.2d:%.2d:%.2d.%06ld M%ld.%06ld %s [%ld] ",
 	    mon_name[tm.tm_mon], tm.tm_mday,
 	    tm.tm_hour, tm.tm_min, tm.tm_sec, tv.tv_usec,
+	    (long)mono.tv_sec, mono.tv_nsec / 1000,
 	    pfs_trace_levelname(level),
 	    (long)syscall(SYS_gettid));
 	if (len < PFS_TRACE_LEN) {
