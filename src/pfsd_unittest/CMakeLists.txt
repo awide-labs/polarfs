@@ -66,3 +66,12 @@ target_link_libraries(pfs_lease_hold
     pfs
     folly
 )
+
+add_executable(pfs_hole_bench
+    pfs_hole_bench.cc
+)
+
+target_link_libraries(pfs_hole_bench
+    pfs
+    folly
+)
