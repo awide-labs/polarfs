@@ -19,6 +19,13 @@
 #include "pfs_devio.h"
 #include "pfs_mount.h"
 
+/*
+ * Preallocated block-sized zero buffer for zero-fill writes.
+ * Read-only after initialization — no locking needed.
+ */
+static char pfs_zero_buf[PFS_BLOCK_SIZE]
+    __attribute__((aligned(4096)));
+
 
 typedef int pfs_blkio_fn_t(int, pfs_bda_t, size_t, char*, pfs_bda_t, size_t,
 	char*, int);
@@ -216,21 +223,14 @@ pfs_blkio_write(pfs_mount_t *mnt, char *data, pfs_blkno_t blkno,
     off_t off, ssize_t len)
 {
 	ssize_t iolen = 0;
-	void *zerobuf = NULL;
 
 	PFS_ASSERT(off + len <= mnt->mnt_blksize);
 	if (data == NULL) {
-		zerobuf = pfs_mem_malloc(len, M_ZERO_BUF);
-		PFS_VERIFY(zerobuf != NULL);
-		memset(zerobuf, 0, len);
-		data = (char *)zerobuf;
+		PFS_ASSERT(len <= (ssize_t)sizeof(pfs_zero_buf));
+		data = pfs_zero_buf;
 	}
 	iolen = pfs_blkio_execute(mnt, data, blkno, off, len,
 	    pfs_blkio_write_segment);
 
-	if (zerobuf) {
-		pfs_mem_free(zerobuf, M_ZERO_BUF);
-		zerobuf = NULL;
-	}
 	return iolen;
 }

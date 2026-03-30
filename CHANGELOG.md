@@ -18,6 +18,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Eager block hole zero-fill on first write eliminates per-write metadata
   lock contention when filling preallocated blocks, improving concurrent
   write throughput up to ~16x (XCOM-120)
+- Replace per-call zero buffer allocation in block I/O with a static
+  preallocated buffer, avoiding malloc/memset/free on the write path (XCOM-2)
 
 ## [2.1.1] - 2026-03.24
 
