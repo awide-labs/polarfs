@@ -693,57 +693,87 @@ pfs_file_write(pfs_inode_t *in, const void *buf, size_t len, off_t *off,
 			ERR_RETVAL(EAGAIN);
 		}
 
-		if (dbhoff < blkoff) {
+		/*
+		 * Check if the block has a hole (unwritten region).
+		 * pfs_dblk_holeoff() returns INT_MAX when holelen==0
+		 * (no hole), so dbhoff < blksize means a hole exists.
+		 *
+		 * The locked==false path is only used for internal files
+		 * (journal, paxos) which are pre-allocated without holes.
+		 */
+		PFS_ASSERT(locked || dbhoff >= (off_t)blksize ||
+		    !pfs_version_has_features(mnt, PFS_FEATURE_BLKHOLE));
+		if (dbhoff < (off_t)blksize &&
+		    pfs_version_has_features(mnt, PFS_FEATURE_BLKHOLE)) {
 			/*
-			 * The write hits in the middle of a hole and will
-			 * split it. To maintain the invariant that a hole
-			 * extends to the end of its block, the left part of
-			 * the hole is filled first.
+			 * Block has a hole. Zero-fill the untouched parts
+			 * and write actual data in one pass, eliminating
+			 * the hole so that all future writes to this block
+			 * skip per-write hole metadata updates.
 			 *
-			 * Note that blkio_write fills the block with zeros
-			 * if its data argument is NULL.
+			 * Layout within the block:
+			 *   [0 .. dbhoff)           already written
+			 *   [dbhoff .. blkoff)      hole gap before data → zero
+			 *   [blkoff .. blkoff+wlen) user data
+			 *   [blkoff+wlen .. blksize) hole gap after data → zero
+			 *
+			 * The inode lock is held during all I/O to prevent
+			 * concurrent writes from racing with our zeros on
+			 * the same block.
 			 */
-			woff = dbhoff;
-			wlen = blkoff - dbhoff;
-			pdata = NULL;
-			dbhoff = blkoff;
-			pfs_inode_writemodify_shrink_dblk_hole(in, blkid,
-			    dbhoff, blksize - dbhoff);
-		} else {
-			woff = blkoff;
 			wlen = MIN(blksize - blkoff, left);
-			pdata = data + wsum;
-			if (dbhoff < blkoff + wlen) {
-				dbhoff = blkoff + wlen;
-				pfs_inode_writemodify_shrink_dblk_hole(in, blkid,
-				    dbhoff, blksize - dbhoff);
+
+			pfs_inode_writemodify_shrink_dblk_hole(in, blkid,
+			    blksize, 0);
+
+			/* Zero-fill gap before data */
+			if (dbhoff < blkoff) {
+				ssize_t zlen = pfs_blkio_write(mnt, NULL,
+				    dblkno, dbhoff, blkoff - dbhoff);
+				if (zlen < 0)
+					return zlen;
 			}
 
-			/*
-			 * Only writing user data can change file size.
-			 * Record the delta into writemodify to exclude others
-			 * before releasing lock.
-			 */
+			/* Write actual user data */
+			wlen = pfs_blkio_write(mnt, data + wsum, dblkno,
+			    blkoff, wlen);
+			if (wlen < 0)
+				return wlen;
+
+			/* Zero-fill gap after data */
+			if (blkoff + wlen < (off_t)blksize) {
+				ssize_t zlen = pfs_blkio_write(mnt, NULL,
+				    dblkno, blkoff + wlen,
+				    blksize - blkoff - wlen);
+				if (zlen < 0)
+					return zlen;
+			}
+
 			if (offset + wlen > fsize) {
 				pfs_inode_writemodify_increment_size(in,
 				    offset + wlen - fsize);
 			}
+		} else {
+			woff = blkoff;
+			wlen = MIN(blksize - blkoff, left);
+			pdata = data + wsum;
+
+			if (offset + wlen > fsize) {
+				pfs_inode_writemodify_increment_size(in,
+				    offset + wlen - fsize);
+			}
+
+			if (locked)
+				pfs_inode_unlock(in);
+
+			wlen = pfs_blkio_write(mnt, pdata, dblkno, woff, wlen);
+
+			if (locked)
+				pfs_inode_lock(in);
+
+			if (wlen < 0)
+				return wlen;
 		}
-		if (locked)
-			pfs_inode_unlock(in);
-
-		wlen = pfs_blkio_write(mnt, pdata, dblkno, woff, wlen);
-
-		if (locked)
-			pfs_inode_lock(in);
-
-		if (wlen < 0)
-			return wlen;
-		/*
-		 * Filling block hole shouldn't update offset.
-		 */
-		if (pdata == NULL)
-			wlen = 0;
 		if (locked) {
 			err = pfs_inode_sync(in, PFS_INODET_FILE, btime, false);
 			if (err)

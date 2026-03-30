@@ -14,6 +14,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   protocol inspired by sanlock delta leases. New `pfs lease` diagnostic command
   (XCOM-90)
 
+### Performance
+- Eager block hole zero-fill on first write eliminates per-write metadata
+  lock contention when filling preallocated blocks, improving concurrent
+  write throughput up to ~16x (XCOM-120)
+
 ## [2.1.1] - 2026-03.24
 
 ### Fixed
