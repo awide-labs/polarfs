@@ -13,6 +13,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Inode LRU eviction in `pfs_put_inode` checked the caller's refcnt instead of
   the eviction candidate's, preventing cache eviction under concurrency and
   causing unbounded inode tree growth (XCOM-129)
+- Reclaim glibc arena memory after unmount to prevent unbounded RSS growth
+  across repeated mount/unmount cycles (XCOM-130)
 
 ## [2.1.2] - 2026-03-30
 

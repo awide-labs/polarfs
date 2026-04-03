@@ -22,6 +22,7 @@
 #include <string.h>
 #include <search.h>
 #include <unistd.h>
+#include <malloc.h>
 
 #include "dclcrwlock.h"
 #include "pfs_admin.h"
@@ -978,6 +979,13 @@ pfs_umount(const char *pbdname)
 	mnt->mnt_status = 0;
 	pfs_trace_ctx_stop();
 	pfs_destroy_mount(mnt);
+
+	/*
+	 * Reclaim glibc arena memory retained from short-lived metadata
+	 * load threads. Without this, repeated mount/unmount cycles
+	 * accumulate unreclaimable RSS in per-thread arenas.
+	 */
+	malloc_trim(0);
 
 	mountentry_fini(me);
 	mountentry_wrunlock(me);
