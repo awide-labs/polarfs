@@ -261,6 +261,12 @@ PFS_OPTION_REG(readtx_skip_sync, pfs_check_ival_switch);
 static int64_t inodetree_lru_size = 65536;
 PFS_OPTION_REG(inodetree_lru_size, pfs_check_ival_normal);
 
+void
+pfs_inodetree_lru_size_set(int64_t val)
+{
+	inodetree_lru_size = val;
+}
+
 static int
 pfs_load_log(pfs_mount_t *mnt)
 {
@@ -1068,7 +1074,7 @@ pfs_put_inode(pfs_mount_t *mnt, pfs_inode_t *in)
 			auto in2 = TAILQ_FIRST(&mnt->mnt_inodelist[i].list);
 			if (in2) {
 				bool need_free = false;
-				if (in->in_refcnt == 0) {
+				if (in2->in_refcnt == 0) {
 					pfs_avl_remove(&mnt->mnt_inodetree, in2);
 					TAILQ_REMOVE(&mnt->mnt_inodelist[i].list, in2, in_next);
 					need_free = true;

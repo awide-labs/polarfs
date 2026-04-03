@@ -81,6 +81,12 @@ echo "Starting PFSD..."
 echo "Running tests..."
 TEST_FAILED=0
 
+echo "Running pfs_inode_lru_test..."
+if ! ./bin/pfs_inode_lru_test; then
+    echo "ERROR: pfs_inode_lru_test failed"
+    TEST_FAILED=1
+fi
+
 echo "Running pfsd_filetest..."
 if ! ./bin/pfsd_filetest 0 "disk" "$TEST_LOOP_DEVICE_NAME"; then
     echo "ERROR: pfsd_filetest failed"

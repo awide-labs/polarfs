@@ -75,3 +75,12 @@ target_link_libraries(pfs_hole_bench
     pfs
     folly
 )
+
+add_executable(pfs_inode_lru_test
+    pfs_inode_lru_test.cc
+)
+
+target_link_libraries(pfs_inode_lru_test
+    pfs
+    folly
+)

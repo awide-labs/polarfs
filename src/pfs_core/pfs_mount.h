@@ -178,6 +178,7 @@ pfs_bda_t 	pfs_mount_align_io(pfs_mount_t *mnt, pfs_bda_t data_bda, size_t data_
 pfs_inode_t *	pfs_get_inode(pfs_mount_t *mnt, pfs_ino_t ino);
 void 		pfs_put_inode(pfs_mount_t *mnt, pfs_inode_t *in);
 pfs_inode_t *	pfs_add_inode(pfs_mount_t *mnt, pfs_inode_t *in);
+void		pfs_inodetree_lru_size_set(int64_t val);
 int		pfs_mount_block_isused(pfs_mount_t *mnt, uint64_t btno);
 bool		pfs_mount_needsync(pfs_mount_t *mnt);
 int 		pfs_mount_sync(pfs_mount_t *mnt);
