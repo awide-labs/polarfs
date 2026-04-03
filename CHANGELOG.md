@@ -81,9 +81,9 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/Awydex/polarfs/compare/ad120c4..master
-[2.1.3]: https://github.com/Awydex/polarfs/compare/ad120c4..3d211e0
-[2.1.2]: https://github.com/Awydex/polarfs/compare/896b394..ad120c4
-[2.1.1]: https://github.com/Awydex/polarfs/compare/3a3b0c6..896b394
-[2.1.0]: https://github.com/Awydex/polarfs/compare/d563a18..3a3b0c6
-[2.0.0]: https://github.com/Awydex/polarfs/compare/d0c5dc6..d563a18
+[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.3..master
+[2.1.3]: https://github.com/Awydex/polarfs/compare/v2.1.2..v2.1.3
+[2.1.2]: https://github.com/Awydex/polarfs/compare/v2.1.1..v2.1.2
+[2.1.1]: https://github.com/Awydex/polarfs/compare/v2.1.0..v2.1.1
+[2.1.0]: https://github.com/Awydex/polarfs/compare/v2.0.0..v2.1.0
+[2.0.0]: https://github.com/Awydex/polarfs/compare/d0c5dc6..v2.0.0
