@@ -76,6 +76,15 @@ target_link_libraries(pfs_hole_bench
     folly
 )
 
+add_executable(pfsd_ebusy_test
+    pfsd_ebusy_test.cc
+)
+
+target_link_libraries(pfsd_ebusy_test
+    pfsd
+    folly
+)
+
 add_executable(pfs_inode_lru_test
     pfs_inode_lru_test.cc
 )

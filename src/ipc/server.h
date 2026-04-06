@@ -327,7 +327,6 @@ private:
 
         if (err != 0) {
           pfsd_error("Remount error: %d", err);
-          host_id_ = -1;
         } else {
           pbdname_ = message.pbdname;
           host_id_ = message.host_id;

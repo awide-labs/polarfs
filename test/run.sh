@@ -112,6 +112,12 @@ if ! ./bin/pfsd_perftest -C "disk" -D "$TEST_LOOP_DEVICE_NAME" -t 100000; then
     TEST_FAILED=1
 fi
 
+echo "Running pfsd_ebusy_test..."
+if ! bash "$(dirname "$0")/pfsd-ebusy-test.sh"; then
+    echo "ERROR: pfsd_ebusy_test failed"
+    TEST_FAILED=1
+fi
+
 if [[ $TEST_FAILED -ne 0 ]]; then
     echo "=== ONE OR MORE TESTS FAILED ==="
     exit 1

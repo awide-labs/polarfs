@@ -1953,6 +1953,8 @@ int
 pfs_remount_rw(const char *pbdname, int host_id, int flags)
 {
 	int err, devflags;
+	uint32_t saved_host_id;
+	int saved_flags;
 	struct pbdinfo pi;
 	mountentry_t *me;
 
@@ -1987,6 +1989,8 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 		ERR_RETVAL(ENODEV);
 	}
 	mnt = me->me_mount;
+	saved_host_id = mnt->mnt_host_id;
+	saved_flags = mnt->mnt_flags;
 	pfs_bd_stop(mnt);
 	pfs_poll_stop(mnt);
 	pfs_log_suspend(&mnt->mnt_log);
@@ -2036,7 +2040,8 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 			pfs_etrace("remount RW blocked by live RW lease holder, "
 			    "restoring RO mount\n");
 			pfs_leader_unload(mnt);
-			mnt->mnt_flags &= ~MNTFLG_WR;
+			mnt->mnt_host_id = saved_host_id;
+			mnt->mnt_flags = saved_flags;
 			if (pfs_leader_load(mnt) < 0) {
 				pfs_etrace("RO reload after EBUSY failed, "
 				    "unrecoverable\n");
@@ -2051,7 +2056,15 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 			 * pfs_umount/pfs_mount_release cleanly.
 			 * pfs_poll_stop in pfs_umount is safe when poll_tid=0.
 			 */
+			pfs_notify_inited(mnt);
 			mountentry_wrunlock(me);
+
+			mnt = pfs_get_mount(pbdname);
+			if (mnt != NULL) {
+				mnt->mnt_admin = pfs_admin_init(pbdname);
+				pfs_put_mount(mnt);
+			}
+
 			errno = EBUSY;
 			return -EBUSY;
 		}
@@ -2570,4 +2583,33 @@ pfs_mntstat_stop(pfs_mount_t *mnt)
 		PFS_VERIFY(rv == 0);
 		mnt->mnt_stat_tid = 0;
 	}
+}
+
+/*
+ * Refcount accessors — expose static pfsd refcount state for test
+ * introspection.  Only called from single-threaded assertion paths in
+ * pfs_lease_hold test modes; no lock required.
+ */
+int
+pfsd_get_mnt_ref_count(void)
+{
+	return pfsd_mnt_ref_count;
+}
+
+int
+pfsd_get_mnt_wrref_count(void)
+{
+	return pfsd_mnt_wrref_count;
+}
+
+int
+pfsd_get_host_ref_count(int host_id)
+{
+	return pfsd_mount_shared_infos[host_id].ms_ref_count;
+}
+
+bool
+pfsd_get_host_is_rwmnt(int host_id)
+{
+	return pfsd_mount_shared_infos[host_id].ms_is_rwmnt;
 }

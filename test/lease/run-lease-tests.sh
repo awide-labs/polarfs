@@ -68,6 +68,8 @@ run_group tc-j-self-heal.sh         "Group J: pfs_rw_lease_renew self-heal"
 run_group tc-k-wait-check.sh        "Group K: wait_and_check sub-paths"
 run_group tc-l-wait-check-edge.sh   "Group L: wait_and_check edge cases (multi-blocker)"
 run_group tc-m-ballot.sh            "Group M: ballot-based lease acquisition"
+run_group tc-n-watchdog.sh          "Group N: timer-kill watchdog"
+run_group tc-o-refcount.sh          "Group O: Multi-client refcount"
 
 echo ""
 echo "============================================"

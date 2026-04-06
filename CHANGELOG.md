@@ -8,6 +8,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+
+- pfsdaemon on replica could crash after a failed RW promote (e.g. triggered
+  by `pfs mkdir`) left the internal mount entry in an inconsistent state
+  (XCOM-132)
+
 ## [2.1.3] - 2026-04-03
 
 ### Fixed

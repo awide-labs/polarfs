@@ -197,6 +197,12 @@ int		pfs_mount_fstrim(pfs_mount_t *mnt, int64_t beginid,
 void 		pfs_dump_used(pfs_mount_t *mnt, int type, int ckid[2]);
 int		pfs_list_used(pfs_mount_t *mnt, int type, int ckid, oidvect_t *ov);
 void		pfs_dump_meta(pfs_mount_t *mnt, int type, int chunkid, int objid);
+
+/* Refcount accessors for test introspection */
+int		pfsd_get_mnt_ref_count(void);
+int		pfsd_get_mnt_wrref_count(void);
+int		pfsd_get_host_ref_count(int host_id);
+bool		pfsd_get_host_is_rwmnt(int host_id);
 /*
  * mount_XXXable() means whether XXX module is enabled.
  * mount_XXXed() means whether specified mount status is true.

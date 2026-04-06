@@ -23,6 +23,10 @@
 #        called internally; the RW lease sector must be zeroed afterwards.
 # TC-G7: After RW→RO demotion the lease is available — a third host can
 #        immediately acquire the RW lease without waiting for expiry.
+# TC-G8: Mount usable after failed promote — after pfs_remount_rw returns
+#        EBUSY, the restored RO mount must still be functional (stat on root
+#        succeeds).  Regression test for missing pfs_notify_inited in the
+#        EBUSY recovery path.
 
 source "$(dirname "$0")/common.sh"
 
@@ -354,6 +358,113 @@ else
         else
             stop_holder "$DEMOTE_PID"
             fail "TC-G7: host 3 could not mount RW after host 1 demoted"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# TC-G8: Mount usable after failed promote (EBUSY recovery)
+#
+# Regression test for the pfs_notify_inited bug: pfs_remount_rw EBUSY path
+# used to leave mnt_status=0, making pfs_meta_lock a silent no-op.  The
+# first stat/open that hit a namecache miss would crash on
+# PFS_ASSERT(pfs_meta_islocked(mnt)) in pfs_inode_dir_find.
+#
+# After the fix, the promote helper does pfs_stat("/pbdname/") immediately
+# after REMOUNT_FAILED and prints MOUNT_USABLE on success.  Without the fix
+# the helper process crashes (detected as process death + missing output).
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-G8: mount usable after failed promote (EBUSY recovery)"
+
+HOLDER_PID=""
+if ! start_rw_holder 1; then
+    fail "TC-G8: setup: could not start RW holder as host 1"
+else
+    H1_PID="$HOLDER_PID"
+    sleep 2   # ensure H1 is actively renewing
+
+    if ! start_promote_holder 2; then
+        stop_holder "$H1_PID"
+        fail "TC-G8: could not start promote holder for host 2"
+    else
+        H2_PID="$HOLDER_PID"
+        H2_OUT="$PROMOTE_TMPOUT"
+
+        # Send promote signal manually — we need to keep the output file
+        # alive (trigger_promote deletes it) so we can check MOUNT_USABLE.
+        kill -USR1 "$H2_PID" 2>/dev/null
+
+        # Wait for REMOUNT_FAILED + MOUNT_USABLE + REFCOUNT_OK (or
+        # process death).  Budget: wait_and_check (≤LEASE_TEST_DURATION)
+        # + restore (≤3s) + stat + refcount check (instant) + jitter (5s).
+        deadline=$(( SECONDS + LEASE_TEST_DURATION + 10 ))
+        got_result=false
+        while [[ $SECONDS -lt $deadline ]]; do
+            if grep -q "^REFCOUNT_OK$\|^REFCOUNT_BAD:" "$H2_OUT" 2>/dev/null; then
+                got_result=true
+                break
+            fi
+            if grep -q "^MOUNT_USABLE$" "$H2_OUT" 2>/dev/null; then
+                # MOUNT_USABLE appeared but REFCOUNT line not yet — brief
+                # extra wait for the next printf to land.
+                sleep 0.2
+                got_result=true
+                break
+            fi
+            if grep -q "^MOUNT_UNUSABLE:" "$H2_OUT" 2>/dev/null; then
+                got_result=true
+                break
+            fi
+            if grep -q "^MOUNTED_RW$" "$H2_OUT" 2>/dev/null; then
+                # Promote unexpectedly succeeded
+                got_result=true
+                break
+            fi
+            if ! kill -0 "$H2_PID" 2>/dev/null; then
+                break
+            fi
+            sleep 0.2
+        done
+
+        if grep -q "^MOUNT_USABLE$" "$H2_OUT" 2>/dev/null; then
+            if grep -q "^REFCOUNT_OK$" "$H2_OUT" 2>/dev/null; then
+                rm -f "$H2_OUT"
+                stop_holder "$H2_PID"
+                stop_holder "$H1_PID"
+                pass "TC-G8: mount usable and refcounts correct after failed promote"
+            elif grep -q "^REFCOUNT_BAD:" "$H2_OUT" 2>/dev/null; then
+                rc_info=$(grep "^REFCOUNT_BAD:" "$H2_OUT" | head -1)
+                rm -f "$H2_OUT"
+                stop_holder "$H2_PID"
+                stop_holder "$H1_PID"
+                fail "TC-G8: mount usable but refcounts wrong ($rc_info)"
+            else
+                rm -f "$H2_OUT"
+                stop_holder "$H2_PID"
+                stop_holder "$H1_PID"
+                pass "TC-G8: mount still usable after failed promote"
+            fi
+        elif ! kill -0 "$H2_PID" 2>/dev/null; then
+            rm -f "$H2_OUT"
+            stop_holder "$H1_PID"
+            fail "TC-G8: promote holder crashed after EBUSY (pfs_notify_inited missing?)"
+        elif grep -q "^MOUNTED_RW$" "$H2_OUT" 2>/dev/null; then
+            rm -f "$H2_OUT"
+            stop_holder "$H2_PID"
+            stop_holder "$H1_PID"
+            fail "TC-G8: promote should have failed with EBUSY"
+        elif grep -q "^MOUNT_UNUSABLE:" "$H2_OUT" 2>/dev/null; then
+            result=$(grep "^MOUNT_UNUSABLE:" "$H2_OUT" | head -1)
+            rm -f "$H2_OUT"
+            stop_holder "$H2_PID"
+            stop_holder "$H1_PID"
+            fail "TC-G8: stat failed after EBUSY recovery ($result)"
+        else
+            rm -f "$H2_OUT"
+            stop_holder "$H2_PID"
+            stop_holder "$H1_PID"
+            fail "TC-G8: timed out waiting for MOUNT_USABLE output"
         fi
     fi
 fi
