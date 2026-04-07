@@ -23,6 +23,7 @@
 #include <search.h>
 #include <unistd.h>
 #include <malloc.h>
+#include <new>
 
 #include "dclcrwlock.h"
 #include "pfs_admin.h"
@@ -484,7 +485,7 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 	mnt = (pfs_mount_t *)pfs_mem_malloc(sizeof(*mnt), M_MOUNT);
 	if (mnt == NULL)
 		ERR_GOTO(ENOMEM, out);
-	memset(mnt, 0, sizeof(*mnt));
+	new (mnt) pfs_mount_t{};
 	mnt->mnt_id = -1;
 	mnt->mnt_epoch = -1;
 	mnt->mnt_status = 0;
