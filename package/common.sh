@@ -44,6 +44,6 @@ build_package() {
         -d libunwind \
         -d python3 \
         --force \
-        --description "Alibaba PolarFS distributed file system" \
+        --description "PolarFS distributed file system" \
         -C install etc/ usr/ var/
 }
