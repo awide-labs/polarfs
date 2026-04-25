@@ -160,7 +160,10 @@ public:
 
   void cleanupClient(uint64_t clientId) {
     evb_.runInEventBaseThread([this, clientId] {
-      bufferTable_.eraseBuffers(clientId);
+      {
+        std::lock_guard lk(rwLock_);
+        bufferTable_.eraseBuffers(clientId);
+      }
       clients_.erase(clientId);
       pfsd_info("Cleaned up client %lu", clientId);
     });
