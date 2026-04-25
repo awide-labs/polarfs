@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.5] - 2026-04-25
+
 ### Changed
 
 - CMake verifies glog, libfmt, and libfuse at configure time and reports
@@ -102,7 +104,8 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.4..master
+[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.5..master
+[2.1.5]: https://github.com/Awydex/polarfs/compare/v2.1.4..v2.1.5
 [2.1.4]: https://github.com/Awydex/polarfs/compare/v2.1.3..v2.1.4
 [2.1.3]: https://github.com/Awydex/polarfs/compare/v2.1.2..v2.1.3
 [2.1.2]: https://github.com/Awydex/polarfs/compare/v2.1.1..v2.1.2

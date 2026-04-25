@@ -171,7 +171,7 @@ is_commit_excluded() {
 
   # Use indirect array reference
   local excluded_array
-  eval "excluded_array=(\"\${${excluded_array_name}[@]}\")"
+  eval "excluded_array=(\"\${${excluded_array_name}[@]-}\")"
 
   local excluded
   for excluded in "${excluded_array[@]}"; do
