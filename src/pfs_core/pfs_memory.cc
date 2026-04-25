@@ -152,6 +152,10 @@ pfs_mem_realloc(void *ptr, size_t newsize, int type)
 	int inc;
 	size_t oldsize;
 
+	if (newsize == 0) {
+		pfs_mem_free(ptr, type);
+		return NULL;
+	}
 	if (ptr) {
 		oldsize = malloc_usable_size(ptr);
 		inc = 0;
