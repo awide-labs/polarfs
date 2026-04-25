@@ -106,6 +106,8 @@ execute_process(COMMAND cp ${PROJECT_SOURCE_DIR}/src/pfs_core/pfs_api.h ${PROJEC
 
 add_definitions(-DGLOG_USE_GLOG_EXPORT)
 
+include(${CMAKE_SOURCE_DIR}/cmake/deps.cmake)
+
 add_subdirectory(third-party/folly)
 add_subdirectory(third-party/zlog)
 add_subdirectory(src)

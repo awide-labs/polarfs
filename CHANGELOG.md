@@ -8,6 +8,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- CMake verifies glog, libfmt, and libfuse at configure time and reports
+  missing dependencies with distro install hints instead of failing at link
+  time with opaque errors (XCOM-139)
+
 ### Fixed
 
 - pfsdaemon could crash when a client disconnected while it still had
