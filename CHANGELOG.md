@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic
 Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
 
 ### Changed
 
@@ -102,6 +102,7 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
+[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.4..master
 [2.1.4]: https://github.com/Awydex/polarfs/compare/v2.1.3..v2.1.4
 [2.1.3]: https://github.com/Awydex/polarfs/compare/v2.1.2..v2.1.3
 [2.1.2]: https://github.com/Awydex/polarfs/compare/v2.1.1..v2.1.2
