@@ -192,10 +192,11 @@ public:
   ClientContext(folly::EventBase &evb, folly::NetworkSocket &fd, Server *server,
                 uint64_t clientId)
       : socket_(std::make_unique<folly::AsyncFdSocket>(&evb, fd)),
-        bufferQueue_(folly::IOBufQueue::cacheChainLength()) {
+        bufferQueue_(folly::IOBufQueue::cacheChainLength()),
+        server_(server),
+        clientId_(clientId),
+        host_id_(-1) {
     socket_->setReadCB(this);
-    server_ = server;
-    clientId_ = clientId;
   }
 
   void sendQueuesToClient() {

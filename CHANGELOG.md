@@ -12,6 +12,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 - pfsdaemon could crash when a client disconnected while it still had
   in-flight requests on the daemon (XCOM-135)
+- pfsdaemon could misbehave or crash when a client disconnected before
+  completing the initial handshake (XCOM-136)
 
 ## [2.1.4] - 2026-04-07
 
