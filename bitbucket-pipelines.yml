@@ -8,7 +8,7 @@ x-step-common: &step-common
   caches:
     - docker
   variables:
-    DOCKER_REGISTRY: crg.apkg.io/awide
+    DOCKER_REGISTRY: ghcr.io/awydex
 
 x-step-package: &step-package
   image: docker:latest
@@ -18,14 +18,15 @@ x-step-package: &step-package
   caches:
     - docker
   variables:
-    DOCKER_REGISTRY: crg.apkg.io/awide
+    DOCKER_REGISTRY: ghcr.io/awydex
 
 x-prepare-builder: &prepare-builder |
   apk add --no-cache git
   git submodule update --init --recursive
-  export DOCKER_REGISTRY="${DOCKER_REGISTRY:-crg.apkg.io/awide}"
+  export DOCKER_REGISTRY="${DOCKER_REGISTRY:-ghcr.io/awydex}"
+  DOCKER_LOGIN_HOST="${DOCKER_REGISTRY%%/*}"
   if [ -n "$API_TOKEN" ] && [ -n "$DOCKER_USER" ]; then
-    echo "$API_TOKEN" | docker login "$DOCKER_REGISTRY" --username "$DOCKER_USER" --password-stdin
+    echo "$API_TOKEN" | docker login "$DOCKER_LOGIN_HOST" --username "$DOCKER_USER" --password-stdin
   fi
   echo "Pulling builder image from registry..."
   docker pull "${DOCKER_REGISTRY}/pfs-build-${BUILDER_IMAGE}" || {
@@ -73,7 +74,7 @@ definitions:
           - git fetch origin ${BITBUCKET_PR_DESTINATION_BRANCH}
           - .ci/check_changelog.sh origin/${BITBUCKET_PR_DESTINATION_BRANCH}
 
-    - step: &build-docker-images
+    - step: &build-docker-images-base
         name: Build Docker Images
         image: docker:latest
         size: 2x
@@ -82,16 +83,17 @@ definitions:
         caches:
           - docker
         variables:
-          DOCKER_REGISTRY: crg.apkg.io/awide
+          DOCKER_REGISTRY: ghcr.io/awydex
         script:
           - apk add --no-cache git
           - |
-            export DOCKER_REGISTRY="${DOCKER_REGISTRY:-crg.apkg.io/awide}"
+            export DOCKER_REGISTRY="${DOCKER_REGISTRY:-ghcr.io/awydex}"
             if [ -z "$API_TOKEN" ] || [ -z "$DOCKER_USER" ]; then
               echo "Error: API_TOKEN and DOCKER_USER must be set to push images"
               exit 1
             fi
-            echo "$API_TOKEN" | docker login "$DOCKER_REGISTRY" --username "$DOCKER_USER" --password-stdin
+            DOCKER_LOGIN_HOST="${DOCKER_REGISTRY%%/*}"
+            echo "$API_TOKEN" | docker login "$DOCKER_LOGIN_HOST" --username "$DOCKER_USER" --password-stdin
             # Iterate through all Dockerfile.* files in docker/builder/
             for dockerfile in docker/builder/Dockerfile.*; do
               [ -f "$dockerfile" ] || continue
@@ -102,10 +104,16 @@ definitions:
               docker tag "$IMAGE_NAME" "${DOCKER_REGISTRY}/pfs-build-${IMAGE_NAME}"
               docker image push "${DOCKER_REGISTRY}/pfs-build-${IMAGE_NAME}"
             done
+
+    - step: &build-docker-images-if-dockerfiles
+        <<: *build-docker-images-base
         condition:
           changesets:
             includePaths:
               - "docker/builder/Dockerfile.*"
+
+    - step: &build-docker-images
+        <<: *build-docker-images-base
 
     # Rocky 9 build
     - step: &build-rocky-9
@@ -213,7 +221,7 @@ pipelines:
           - step: *package-ubuntu-22.04
           - step: *package-ubuntu-latest
     full:
-      - step: *build-docker-images
+      - step: *build-docker-images-if-dockerfiles
       - parallel:
           - step: *build-rocky-9
           - step: *build-rocky-10
