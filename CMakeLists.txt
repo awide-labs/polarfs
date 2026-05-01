@@ -93,6 +93,68 @@ set(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O2 -finline-limit=100000 -DNDEBUG -
 set(CMAKE_C_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -ggdb -DDEBUG -DCHKSVR_LOG_LEVEL=${DEBUG_LEVEL}")
 set(CMAKE_C_FLAGS_RELEASE "$ENV{CXXFLAGS} -O2 -finline-limit=100000 -DNDEBUG -DCHKSVR_LOG_LEVEL=${RELEASE_LEVEL}")
 
+# Link-time optimization (Release only): append -flto to Release compile and
+# link lines. We intentionally do not use CMake IPO here: vendored Folly calls
+# cmake_minimum_required(3.5), which leaves CMP0069 unset so IPO would warn
+# and be ignored for Folly targets unless we patch upstream CMakeLists.
+# Disable LTO with -DPFSD_ENABLE_LTO=OFF.
+option(PFSD_ENABLE_LTO "Enable link-time optimization for Release builds" ON)
+if(PFSD_ENABLE_LTO)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(_pfsd_lto_flag "-flto=auto")
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+    set(_pfsd_lto_flag "-flto=thin")
+  else()
+    set(_pfsd_lto_flag "")
+  endif()
+  if(_pfsd_lto_flag)
+    include(CheckCXXCompilerFlag)
+    include(CheckCCompilerFlag)
+    check_cxx_compiler_flag("${_pfsd_lto_flag}" _pfsd_cxx_lto_ok)
+    check_c_compiler_flag("${_pfsd_lto_flag}" _pfsd_c_lto_ok)
+    if(_pfsd_cxx_lto_ok AND _pfsd_c_lto_ok)
+      string(APPEND CMAKE_CXX_FLAGS_RELEASE " ${_pfsd_lto_flag}")
+      string(APPEND CMAKE_C_FLAGS_RELEASE " ${_pfsd_lto_flag}")
+      string(APPEND CMAKE_EXE_LINKER_FLAGS " ${_pfsd_lto_flag}")
+      string(APPEND CMAKE_SHARED_LINKER_FLAGS " ${_pfsd_lto_flag}")
+      # Do not append to CMAKE_STATIC_LINKER_FLAGS: that is passed to `ar`
+      # when creating .a files; -flto is not an ar option and breaks EL9 with
+      # "two different operation options". LTO comes from compile flags on .o.
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        # g++ -print-prog-name=ar is often plain "ar" (not gcc-ar); LTO bytecode
+        # objects need gcc-ar / gcc-ranlib. Prefer tools next to the compiler,
+        # then /usr/bin (Rocky/Ubuntu layout).
+        get_filename_component(_pfsd_cc_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        set(_pfsd_gcc_ar "")
+        foreach(_pfsd_ar_cand "${_pfsd_cc_dir}/gcc-ar" "/usr/bin/gcc-ar")
+          if(EXISTS "${_pfsd_ar_cand}")
+            set(_pfsd_gcc_ar "${_pfsd_ar_cand}")
+            break()
+          endif()
+        endforeach()
+        set(_pfsd_gcc_ranlib "")
+        foreach(_pfsd_rl_cand "${_pfsd_cc_dir}/gcc-ranlib" "/usr/bin/gcc-ranlib")
+          if(EXISTS "${_pfsd_rl_cand}")
+            set(_pfsd_gcc_ranlib "${_pfsd_rl_cand}")
+            break()
+          endif()
+        endforeach()
+        if(_pfsd_gcc_ar AND _pfsd_gcc_ranlib)
+          set(CMAKE_CXX_COMPILER_AR "${_pfsd_gcc_ar}" CACHE FILEPATH "" FORCE)
+          set(CMAKE_CXX_COMPILER_RANLIB "${_pfsd_gcc_ranlib}" CACHE FILEPATH "" FORCE)
+          set(CMAKE_C_COMPILER_AR "${_pfsd_gcc_ar}" CACHE FILEPATH "" FORCE)
+          set(CMAKE_C_COMPILER_RANLIB "${_pfsd_gcc_ranlib}" CACHE FILEPATH "" FORCE)
+        endif()
+      endif()
+      message(STATUS "LTO enabled (${_pfsd_lto_flag} on Release compile; exe/shared link)")
+    else()
+      message(WARNING "LTO flag ${_pfsd_lto_flag} not accepted by C or C++ compiler")
+    endif()
+  else()
+    message(WARNING "LTO is not configured for compiler ID ${CMAKE_CXX_COMPILER_ID}")
+  endif()
+endif()
+
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
 

@@ -15,6 +15,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Release builds use link-time optimization (LTO) by default via compile and
+  link `-flto` flags (not CMake IPO, so vendored Folly stays unpatched); pass
+  `-DPFSD_ENABLE_LTO=OFF` to CMake to disable (XCOM-148)
 - Compile PolarFS C++ sources as C++20 to match vendored Folly requirements
   (XCOM-142)
 
