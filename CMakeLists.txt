@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required (VERSION 2.8)
+cmake_minimum_required(VERSION 3.16)
 project(pfsd CXX C ASM)
 
 message("compile pfsd for PostgreSQL")
@@ -87,7 +87,7 @@ if(DEFINED ENV{POLAR_LOG_RELEASE_LEVEL})
 	set(RELEASE_LEVEL $ENV{POLAR_LOG_RELEASE_LEVEL})
 endif()
 
-message("build log level release level "${RELEASE_LEVEL} " debug level "${DEBUG_LEVEL})
+message("build log level release level ${RELEASE_LEVEL} debug level ${DEBUG_LEVEL}")
 set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -ggdb -DDEBUG -DCHKSVR_LOG_LEVEL=${DEBUG_LEVEL}")
 set(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O2 -finline-limit=100000 -DNDEBUG -DCHKSVR_LOG_LEVEL=${RELEASE_LEVEL}")
 set(CMAKE_C_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -ggdb -DDEBUG -DCHKSVR_LOG_LEVEL=${DEBUG_LEVEL}")

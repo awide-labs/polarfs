@@ -12,7 +12,7 @@ Usage:
     $0 [RELEASE]
 
 Build the source code and package it into polarfs-VERSION-RELEASE.rpm, where the
-VERSION string is composed of variables defined in the VERSION file in the root
+VERSION string is composed of variables defined in the POLARFS_VERSION file in the root
 source directory and the optional RELEASE argument specifies the RPM release
 number.
 

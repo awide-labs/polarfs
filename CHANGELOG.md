@@ -8,6 +8,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `docker/builder/Dockerfile.ubuntu:devel` for builds on Ubuntu devel/rolling
+  toolchains (XCOM-142)
+
+### Fixed
+
+- CMake minimum raised to 3.16 and `message()` quoting fixed for current CMake
+  releases (XCOM-142)
+- Vendored Folly pinned to upstream tag v2026.04.27.00 for current Boost
+  and CMake behavior on Boost 1.89+ toolchains (XCOM-142)
+- `autobuild.sh` now exits non-zero when CMake configure fails (XCOM-142)
+- Renamed root `VERSION` to `POLARFS_VERSION` so project-root include paths
+  do not shadow the C++20 `<version>` standard header (XCOM-142)
+
 ## [2.1.5] - 2026-04-25
 
 ### Changed
