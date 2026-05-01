@@ -110,7 +110,7 @@ jobs:
         id: set-matrix
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
-            echo 'matrix={"include":[{"image":"rockylinux:9","dockerfile":"Dockerfile.rockylinux:9"},{"image":"rockylinux:10","dockerfile":"Dockerfile.rockylinux:10"},{"image":"ubuntu:22.04","dockerfile":"Dockerfile.ubuntu:22.04"},{"image":"ubuntu:latest","dockerfile":"Dockerfile.ubuntu:latest"}]}' >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[{"image":"rockylinux:9","dockerfile":"Dockerfile.rockylinux:9"},{"image":"rockylinux:10","dockerfile":"Dockerfile.rockylinux:10"},{"image":"ubuntu:22.04","dockerfile":"Dockerfile.ubuntu:22.04"},{"image":"ubuntu:latest","dockerfile":"Dockerfile.ubuntu:latest"},{"image":"ubuntu:devel","dockerfile":"Dockerfile.ubuntu:devel"}]}' >> $GITHUB_OUTPUT
           else
             echo 'matrix={"include":[{"image":"rockylinux:9","dockerfile":"Dockerfile.rockylinux:9"},{"image":"ubuntu:latest","dockerfile":"Dockerfile.ubuntu:latest"}]}' >> $GITHUB_OUTPUT
           fi

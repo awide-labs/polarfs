@@ -151,6 +151,15 @@ definitions:
           - *prepare-builder
           - *build-script
 
+    # Ubuntu devel build
+    - step: &build-ubuntu-devel
+        <<: *step-common
+        name: Build (Ubuntu devel)
+        script:
+          - export BUILDER_IMAGE="ubuntu:devel"
+          - *prepare-builder
+          - *build-script
+
     # Rocky 9 package
     - step: &package-rocky-9
         <<: *step-package
@@ -195,6 +204,17 @@ definitions:
         artifacts:
           - polarfs*.deb
 
+    # Ubuntu devel package
+    - step: &package-ubuntu-devel
+        <<: *step-package
+        name: Package (Ubuntu devel)
+        script:
+          - export BUILDER_IMAGE="ubuntu:devel"
+          - *prepare-builder
+          - *package-script
+        artifacts:
+          - polarfs*.deb
+
 pipelines:
   # Non-default branches: Rocky 9 + Ubuntu latest only
   default:
@@ -210,6 +230,7 @@ pipelines:
           - step: *build-rocky-10
           - step: *build-ubuntu-22.04
           - step: *build-ubuntu-latest
+          - step: *build-ubuntu-devel
 
   custom:
     build-docker-images:
@@ -220,6 +241,7 @@ pipelines:
           - step: *package-rocky-10
           - step: *package-ubuntu-22.04
           - step: *package-ubuntu-latest
+          - step: *package-ubuntu-devel
     full:
       - step: *build-docker-images-if-dockerfiles
       - parallel:
@@ -227,11 +249,13 @@ pipelines:
           - step: *build-rocky-10
           - step: *build-ubuntu-22.04
           - step: *build-ubuntu-latest
+          - step: *build-ubuntu-devel
       - parallel:
           - step: *package-rocky-9
           - step: *package-rocky-10
           - step: *package-ubuntu-22.04
           - step: *package-ubuntu-latest
+          - step: *package-ubuntu-devel
 
   # Pull requests: Rocky 9 + Ubuntu latest only
   pull-requests:
