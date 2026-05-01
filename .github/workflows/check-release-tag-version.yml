@@ -1,0 +1,22 @@
+name: Check Release Tag POLARFS_VERSION
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  check-release-tag-version:
+    name: Release tag matches POLARFS_VERSION
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches POLARFS_VERSION
+        run: .ci/check_release_tag_version.sh
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}

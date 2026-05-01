@@ -74,6 +74,13 @@ definitions:
           - git fetch origin ${BITBUCKET_PR_DESTINATION_BRANCH}
           - .ci/check_changelog.sh origin/${BITBUCKET_PR_DESTINATION_BRANCH}
 
+    - step: &check-release-tag-version
+        name: Check release tag matches POLARFS_VERSION
+        image: atlassian/default-image:3
+        size: 1x
+        script:
+          - .ci/check_release_tag_version.sh
+
     - step: &build-docker-images-base
         name: Build Docker Images
         image: docker:latest
@@ -216,6 +223,10 @@ definitions:
           - polarfs*.deb
 
 pipelines:
+  tags:
+    "v*.*.*":
+      - step: *check-release-tag-version
+
   # Non-default branches: Rocky 9 + Ubuntu latest only
   default:
     - parallel:
