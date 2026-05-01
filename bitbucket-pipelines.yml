@@ -40,7 +40,7 @@ x-build-script: &build-script |
     -v $(pwd):/polarfs \
     -w /polarfs \
     "$BUILDER_IMAGE" \
-    ./autobuild.sh
+    bash -lc './autobuild.sh && ./.ci/report_binary_sizes.sh'
 
 x-package-script: &package-script |
   docker run --rm \
