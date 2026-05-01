@@ -13,8 +13,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - `docker/builder/Dockerfile.ubuntu:devel` for builds on Ubuntu devel/rolling
   toolchains (XCOM-142)
 
+### Changed
+
+- Compile PolarFS C++ sources as C++20 to match vendored Folly requirements
+  (XCOM-142)
+
 ### Fixed
 
+- `StackAllocator` passes `uint8_t*` into `StackAllocatorState` so C++20
+  `std::make_shared` construction checks succeed (XCOM-142)
 - CMake minimum raised to 3.16 and `message()` quoting fixed for current CMake
   releases (XCOM-142)
 - Vendored Folly pinned to upstream tag v2026.04.27.00 for current Boost

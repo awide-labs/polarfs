@@ -316,7 +316,11 @@ public:
       : state_(std::move(state)) {}
 
   StackAllocator(void *buf, std::size_t size, std::size_t align = alignof(T))
-      : state_(std::make_shared<StackAllocatorState>(buf, buf, size, align)) {
+      : state_(std::make_shared<StackAllocatorState>(
+            static_cast<uint8_t *>(buf),
+            static_cast<uint8_t *>(buf),
+            size,
+            align)) {
     state_->top = folly::align_ceil(state_->buffer, state_->alignment);
   }
 

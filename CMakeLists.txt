@@ -61,7 +61,7 @@ set(COMMON_FLAGS ${COMMON_FLAGS}  -DPFS_DISK_IO_ONLY)
 
 set(CXX_FLAGS
   ${COMMON_FLAGS}
-  -std=c++17
+  -std=c++20
   -Wno-deprecated
   -Wno-unused-local-typedefs
   -Wno-sign-compare
