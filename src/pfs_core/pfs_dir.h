@@ -42,7 +42,14 @@ typedef struct pfs_direntry_phy {	/* diretory entry */
 	uint64_t	de_extdeno;
 } pfs_direntry_phy_t;
 
-struct __dirstream {
+/*
+ * Internal directory stream. Public APIs in pfs_api.h still return the
+ * system `DIR *` from <dirent.h>; this struct is only the libpfs-internal
+ * layout that opaque pointer actually points at, after the bit-tag stripped
+ * by PFS_DIR_RAW(). The unique struct tag avoids -Wodr conflicts under LTO
+ * with other private dirstream layouts (e.g. struct pfsd_dirstream).
+ */
+struct pfs_dirstream {
 	struct direntplus d_deplus;	/* should be the first member,
 					 * depended on by pfs_readdir */
 
@@ -63,8 +70,8 @@ struct __dirstream {
 	uint64_t	d_deno_index;
 	uint64_t	d_deno_count;
 };
+typedef struct pfs_dirstream pfs_dirstream_t;
 
-typedef struct __dirstream DIR;
 struct dirent;
 
 /* maintain lifetime of directories' meminode */
@@ -77,10 +84,11 @@ int	pfs_memdir_xremove(pfs_mount_t *mnt, nameinfo_t *ni);
 int	pfs_memdir_xrename(pfs_mount_t *mnt, nameinfo_t *oldni, nameinfo_t *newni);
 
 /* dirstream */
-int	pfs_memdir_xopen(pfs_mount_t *mnt, nameinfo_t *ni, DIR **dirp);
-int	pfs_memdir_xread(pfs_mount_t *mnt, DIR *dir, struct dirent *den_result,
-	    struct direntplus **result, bool isplus);
-int	pfs_memdir_close(pfs_mount_t *mnt, DIR *dir);
+int	pfs_memdir_xopen(pfs_mount_t *mnt, nameinfo_t *ni,
+	    pfs_dirstream_t **dirp);
+int	pfs_memdir_xread(pfs_mount_t *mnt, pfs_dirstream_t *dir,
+	    struct dirent *den_result, struct direntplus **result, bool isplus);
+int	pfs_memdir_close(pfs_mount_t *mnt, pfs_dirstream_t *dir);
 
 /* current working directory */
 int	pfs_memdir_xsetwd(pfs_mount_t *mnt, nameinfo_t *ni);

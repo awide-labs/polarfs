@@ -79,7 +79,13 @@ typedef	int	cmd_entry_t(int argc, char *argv[], cmd_opts_t *co);
 typedef	int	cmd_getopt_t(int argc, char *argv[], cmd_opts_t *co);
 typedef	void	cmd_usage_t();
 
-typedef struct 	cmd_info {
+/*
+ * Tag-renamed away from `struct cmd_info` to avoid an LTO ODR clash with
+ * the unrelated `struct cmd_info` (a fixed-layout admin RPC payload) in
+ * pfs_admin.h. The `cmd_info_t` typedef stays so existing callers and the
+ * PFSCMD_INFO() macro keep compiling unchanged.
+ */
+typedef struct pfscmd_dispatch_info {
 	const char	*cmd_name;
 	const char	*cmd_desc;
 	uint32_t	cmd_flags;

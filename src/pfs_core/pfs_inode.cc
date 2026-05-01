@@ -320,7 +320,13 @@ pfs_inode_del(pfs_inode_t *in, pfs_dblk_t *dblk)
 	int err = 0;
 	pfs_blktag_phy_t *bt;
 	pfs_inode_phy_t *phyin;
-	pfs_txop_t *bttop, *phyintop;
+	/*
+	 * Initialized so GCC -Wmaybe-uninitialized stays quiet under LTO when
+	 * the early-return short-circuit in pfs_tx_new_op() leaves only one
+	 * of these set; both pointers are always populated before the first
+	 * use below.
+	 */
+	pfs_txop_t *bttop = NULL, *phyintop = NULL;
 	pfs_mount_t *mnt = in->in_mnt;
 	pfs_blkno_t blkno = dblk->db_blkno;
 	uint64_t btno;
@@ -432,7 +438,7 @@ pfs_inode_add(pfs_inode_t *in, pfs_blkid_t blkid)
 	int err;
 	pfs_blktag_phy_t *bt;
 	pfs_inode_phy_t *phyin;
-	pfs_txop_t *bttop, *phyintop;
+	pfs_txop_t *bttop = NULL, *phyintop = NULL;
 	pfs_tx_t *tx = pfs_tls_get_tx();
 
 	err = 0;

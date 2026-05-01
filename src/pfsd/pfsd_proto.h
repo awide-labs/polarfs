@@ -439,7 +439,14 @@ typedef struct {
 /* For dirent buffer */
 #define PFSD_DIRENT_BUFFER_SIZE (20 * 1024UL)
 
-typedef struct __dirstream {
+/*
+ * Internal pfsd SDK directory stream layout. The public SDK API
+ * (pfsd_sdk.h) exposes only the system `DIR *` from <dirent.h>; the
+ * opaque pointer it returns actually points at this struct after the
+ * low-bit tag is stripped. The unique struct tag avoids -Wodr conflicts
+ * under LTO with the libpfs-internal struct pfs_dirstream.
+ */
+typedef struct pfsd_dirstream {
 	struct dirent d_sysde; /* should be the first member, depended on by pfs_readidr */
 	int64_t d_ino;	  /* dir ino */
 
@@ -450,7 +457,7 @@ typedef struct __dirstream {
 	uint64_t d_data_offset;
 	uint64_t d_data_size;
 	char d_data[PFSD_DIRENT_BUFFER_SIZE];
-} DIR;
+} pfsd_dirstream_t;
 
 typedef struct {
 	COMMON_REQUEST_HEADER;

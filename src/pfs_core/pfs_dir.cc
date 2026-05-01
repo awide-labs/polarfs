@@ -180,7 +180,7 @@ pfs_direntry_fini(pfs_mount_t *mnt, pfs_direntry_phy_t *de)
 }
 
 static inline bool
-pfs_dir_isstale(pfs_mount_t *mnt, DIR *dir)
+pfs_dir_isstale(pfs_mount_t *mnt, pfs_dirstream_t *dir)
 {
 	return !mnt || mnt != dir->d_mnt || mnt->mnt_epoch != dir->d_epoch;
 }
@@ -411,7 +411,7 @@ pfs_dir_del(pfs_mount_t *mnt, pfs_ino_t dirino, pfs_ino_t ino,
 }
 
 static void
-pfs_dir_open(pfs_mount_t *mnt, pfs_ino_t ino, DIR *dir)
+pfs_dir_open(pfs_mount_t *mnt, pfs_ino_t ino, pfs_dirstream_t *dir)
 {
 	pfs_inode_phy_t *in;
 	pfs_direntry_phy_t *de;
@@ -465,7 +465,8 @@ pfs_dir_open(pfs_mount_t *mnt, pfs_ino_t ino, DIR *dir)
 }
 
 static int
-pfs_dir_read(pfs_mount_t *mnt, DIR *dir, struct dirent *den_result, bool isplus)
+pfs_dir_read(pfs_mount_t *mnt, pfs_dirstream_t *dir, struct dirent *den_result,
+    bool isplus)
 {
 	pfs_inode_phy_t *in;
 	pfs_direntry_phy_t *de;
@@ -516,7 +517,7 @@ pfs_dir_read(pfs_mount_t *mnt, DIR *dir, struct dirent *den_result, bool isplus)
 }
 
 static inline void
-pfs_dir_close(pfs_mount_t *mnt, DIR *dir)
+pfs_dir_close(pfs_mount_t *mnt, pfs_dirstream_t *dir)
 {
 	pfs_mem_free(dir->d_deno_vect, M_DENO_VECT);
 	dir->d_deno_index = 0;
@@ -534,7 +535,7 @@ pfs_dir_du(pfs_mount_t *mnt, pfs_ino_t ino, int all, int level, int depth,
 	pfs_inode_phy_t *in;
 	int64_t dusum, subsum;
 	char depath[PFS_MAX_PATHLEN];
-	DIR *dir;
+	pfs_dirstream_t *dir;
 
 	pfs_meta_lock(mnt);
 	in = pfs_meta_get_inode(mnt, ino, NULL);
@@ -549,7 +550,7 @@ pfs_dir_du(pfs_mount_t *mnt, pfs_ino_t ino, int all, int level, int depth,
 		pfs_meta_unlock(mnt);
 	} else {
 		PFS_ASSERT(type == PFS_INODET_DIR);
-		dir = (DIR *)pfs_mem_malloc(sizeof(*dir), M_DIR);
+		dir = (pfs_dirstream_t *)pfs_mem_malloc(sizeof(*dir), M_DIR);
 		if (!dir) {
 			pfs_meta_unlock(mnt);
 			ERR_RETVAL(ENOMEM);
@@ -781,13 +782,13 @@ pfs_dir_rename(pfs_mount_t *mnt,
 }
 
 int
-pfs_memdir_xopen(pfs_mount_t *mnt, nameinfo_t *ni, DIR **dirp)
+pfs_memdir_xopen(pfs_mount_t *mnt, nameinfo_t *ni, pfs_dirstream_t **dirp)
 {
 	int err;
-	DIR *dir;
+	pfs_dirstream_t *dir;
 	pfs_inode_t *in = NULL;
 
-	dir = (DIR *)pfs_mem_malloc(sizeof(*dir), M_DIR);
+	dir = (pfs_dirstream_t *)pfs_mem_malloc(sizeof(*dir), M_DIR);
 	if (!dir) {
 		ERR_RETVAL(ENOMEM);
 	}
@@ -820,8 +821,8 @@ pfs_memdir_xopen(pfs_mount_t *mnt, nameinfo_t *ni, DIR **dirp)
 }
 
 int
-pfs_memdir_xread(pfs_mount_t *mnt, DIR *dir, struct dirent *den_result,
-    struct direntplus **result, bool isplus)
+pfs_memdir_xread(pfs_mount_t *mnt, pfs_dirstream_t *dir,
+    struct dirent *den_result, struct direntplus **result, bool isplus)
 {
 	int err;
 
@@ -956,7 +957,7 @@ out:
 }
 
 int
-pfs_memdir_close(pfs_mount_t *mnt, DIR *dir)
+pfs_memdir_close(pfs_mount_t *mnt, pfs_dirstream_t *dir)
 {
 	bool stale;
 

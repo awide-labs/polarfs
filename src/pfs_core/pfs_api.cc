@@ -116,11 +116,17 @@ pthread_mutex_t	rename_mtx;
 #define PFS_FD_MAKE(fd) 					\
 	(int)((unsigned int)(fd) | (1U << PFS_FD_VALIDBIT))
 
+/*
+ * The opaque DIR pointer returned to callers carries a low-bit tag and
+ * actually points at a libpfs-internal pfs_dirstream_t. Inside the API
+ * layer we keep DIR* in public wrappers (matching pfs_api.h), and cast to
+ * pfs_dirstream_t* whenever we need to dereference fields.
+ */
 #define PFS_DIR_MAKE(dir) 					\
-	(DIR *)((uint64_t)(dir) | (uint64_t)(0x01))
+	((DIR *)((uint64_t)(dir) | (uint64_t)(0x01)))
 
 #define PFS_DIR_RAW(dir) 					\
-	(DIR *)((uint64_t)(dir) & ~(uint64_t)(0x01))
+	((pfs_dirstream_t *)((uint64_t)(dir) & ~(uint64_t)(0x01)))
 
 #define PFS_DIR_CHECK(dir)					\
 	( PFS_DIR_ISVALID(dir) && (PFS_DIR_RAW(dir))->d_mnt )
@@ -237,7 +243,7 @@ const int _gtype = GTYPE_MOUNT_FILE
 #define	GET_MOUNT_DIR(dir, mp) do {			\
 	pfs_mount_t *_m;				\
 							\
-	_m = pfs_get_mount_byid((dir)->d_mntid);	\
+	_m = pfs_get_mount_byid(((pfs_dirstream_t *)(dir))->d_mntid); \
 	*(mp) = _m;					\
 } while (0);						\
 const int _gtype = GTYPE_MOUNT_DIR
@@ -629,7 +635,7 @@ _pfs_mkdir(const char *pbdpath, __attribute__((unused)) mode_t mode)
 }
 
 static int
-_pfs_opendir(const char *pbdpath, DIR **dirp)
+_pfs_opendir(const char *pbdpath, pfs_dirstream_t **dirp)
 {
 	int err;
 	nameinfo_t ni;
@@ -644,7 +650,7 @@ _pfs_opendir(const char *pbdpath, DIR **dirp)
 }
 
 static int
-_pfs_readdir(DIR *dir, struct dirent **dentp)
+_pfs_readdir(pfs_dirstream_t *dir, struct dirent **dentp)
 {
 	int err;
 	pfs_mount_t *mnt = NULL;
@@ -664,7 +670,8 @@ _pfs_readdir(DIR *dir, struct dirent **dentp)
 }
 
 static int
-_pfs_readdir_r(DIR *dir, struct dirent *entry, struct dirent **result)
+_pfs_readdir_r(pfs_dirstream_t *dir, struct dirent *entry,
+    struct dirent **result)
 {
 	int err;
 	pfs_mount_t *mnt = NULL;
@@ -683,7 +690,7 @@ _pfs_readdir_r(DIR *dir, struct dirent *entry, struct dirent **result)
 }
 
 static int
-_pfs_readdirplus(DIR *dir, struct direntplus **dplusp)
+_pfs_readdirplus(pfs_dirstream_t *dir, struct direntplus **dplusp)
 {
 	int err;
 	pfs_mount_t *mnt = NULL;
@@ -698,7 +705,7 @@ _pfs_readdirplus(DIR *dir, struct direntplus **dplusp)
 }
 
 static int
-_pfs_closedir(DIR *dir)
+_pfs_closedir(pfs_dirstream_t *dir)
 {
 	int err;
 	pfs_mount_t *mnt = NULL;
@@ -1331,7 +1338,7 @@ DIR *
 pfs_opendir(const char *pbdpath)
 {
 	int err = -EAGAIN;
-	DIR *dir = NULL;
+	pfs_dirstream_t *dir = NULL;
 
 	if (!pbdpath)
 		err = -EINVAL;
@@ -1345,8 +1352,7 @@ pfs_opendir(const char *pbdpath)
 	if (err < 0)
 		return NULL;
 
-	dir = PFS_DIR_MAKE(dir);
-	return dir;
+	return PFS_DIR_MAKE(dir);
 }
 
 struct dirent *
@@ -1355,14 +1361,15 @@ pfs_readdir(DIR *dir)
 	int err = -EAGAIN;
 	struct dirent *dent = NULL;
 	bool dirok = PFS_DIR_CHECK(dir);
+	pfs_dirstream_t *raw;
 
 	if (!dirok)
 		err = -EBADF;
 	API_ENTER(DEBUG, "%p", dir);
 
-	dir = PFS_DIR_RAW(dir);
+	raw = PFS_DIR_RAW(dir);
 	while (err == -EAGAIN) {
-		err = _pfs_readdir(dir, &dent);
+		err = _pfs_readdir(raw, &dent);
 	}
 
 	API_EXIT(err);
@@ -1376,14 +1383,15 @@ pfs_readdir_r(DIR *dir, struct dirent *entry, struct dirent **result)
 {
 	int err = -EAGAIN;
 	bool dirok = PFS_DIR_CHECK(dir);
+	pfs_dirstream_t *raw;
 
 	if (!dirok || !entry || !result)
 		err = !dirok ? -EBADF : -EINVAL;
 	API_ENTER(DEBUG, "%p, %p, %p", dir, entry, result);
 
-	dir = PFS_DIR_RAW(dir);
+	raw = PFS_DIR_RAW(dir);
 	while (err == -EAGAIN) {
-		err = _pfs_readdir_r(dir, entry, result);
+		err = _pfs_readdir_r(raw, entry, result);
 	}
 
 	API_EXIT(err);
@@ -1398,14 +1406,15 @@ pfs_readdirplus(DIR *dir)
 	int err = -EAGAIN;
 	struct direntplus *dplus = NULL;
 	bool dirok = PFS_DIR_CHECK(dir);
+	pfs_dirstream_t *raw;
 
 	if (!dirok)
 		err = -EBADF;
 	API_ENTER(DEBUG, "%p", dir);
 
-	dir = PFS_DIR_RAW(dir);
+	raw = PFS_DIR_RAW(dir);
 	while (err == -EAGAIN) {
-		err = _pfs_readdirplus(dir, &dplus);
+		err = _pfs_readdirplus(raw, &dplus);
 	}
 
 	API_EXIT(err);
@@ -1419,14 +1428,15 @@ pfs_closedir(DIR *dir)
 {
 	int err = -EAGAIN;
 	bool dirok = PFS_DIR_CHECK(dir);
+	pfs_dirstream_t *raw;
 
 	if (!dirok)
 		err = -EBADF;
 	API_ENTER(DEBUG, "%p", dir);
 
-	dir = PFS_DIR_RAW(dir);
+	raw = PFS_DIR_RAW(dir);
 	while (err == -EAGAIN) {
-		err = _pfs_closedir(dir);
+		err = _pfs_closedir(raw);
 	}
 
 	API_EXIT(err);

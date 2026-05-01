@@ -1604,7 +1604,7 @@ pfsd_opendir(const char *pbdpath)
 		return NULL;
 	}
 
-	DIR *dir = NULL;
+	pfsd_dirstream_t *dir = NULL;
 
 	/* fill request */
 	req->type = PFSD_REQUEST_OPENDIR;
@@ -1618,7 +1618,7 @@ pfsd_opendir(const char *pbdpath)
 		errno = req->rsp.od_rsp.error;
 		PFSD_CLIENT_ELOG("opendir %s error: %s", pbdpath, strerror(errno));
 	} else {
-		dir = PFSD_MALLOC(DIR);
+		dir = PFSD_MALLOC(pfsd_dirstream_t);
 		if (dir == NULL) {
 			errno = ENOMEM;
 		} else {
@@ -1644,7 +1644,7 @@ pfsd_readdir(DIR *dir)
 		return NULL;
 	}
 
-	DIR *raw_dir = PFSD_DIR_RAW(dir);
+	pfsd_dirstream_t *raw_dir = (pfsd_dirstream_t *)PFSD_DIR_RAW(dir);
 	if (!raw_dir) {
 		errno = EINVAL;
 		return NULL;
@@ -1668,27 +1668,27 @@ pfsd_readdir_r(DIR *dir, struct dirent *entry, struct dirent **result)
 		return -1;
 	}
 
-	dir = PFSD_DIR_RAW(dir);
-	if (!dir || !entry || !result) {
+	pfsd_dirstream_t *raw = (pfsd_dirstream_t *)PFSD_DIR_RAW(dir);
+	if (!raw || !entry || !result) {
 		errno = EINVAL;
 		return -1;
 	}
 
 	/* Try read from dirent buffer */
-	if (dir->d_data_offset < dir->d_data_size) {
+	if (raw->d_data_offset < raw->d_data_size) {
 		*result = entry;
-		memcpy(entry, &dir->d_data[dir->d_data_offset], sizeof(*entry));
+		memcpy(entry, &raw->d_data[raw->d_data_offset], sizeof(*entry));
 
-		dir->d_data_offset += sizeof(struct dirent);
-		assert (dir->d_data_offset <= dir->d_data_size);
+		raw->d_data_offset += sizeof(struct dirent);
+		assert (raw->d_data_offset <= raw->d_data_size);
 
 		return 0;
 	} else {
-		dir->d_data_offset = 0;
-		dir->d_data_size = 0;
+		raw->d_data_offset = 0;
+		raw->d_data_size = 0;
 	}
 
-	if (dir->d_next_ino == 0) {
+	if (raw->d_next_ino == 0) {
 		*result = NULL;
 		return 0;
 	}
@@ -1706,9 +1706,9 @@ pfsd_readdir_r(DIR *dir, struct dirent *entry, struct dirent **result)
 
 	/* fill request */
 	req->type = PFSD_REQUEST_READDIR;
-	req->req.rd_req.r_dino = dir->d_ino;
-	req->req.rd_req.r_ino = dir->d_next_ino;
-	req->req.rd_req.r_offset = dir->d_next_offset;
+	req->req.rd_req.r_dino = raw->d_ino;
+	req->req.rd_req.r_ino = raw->d_next_ino;
+	req->req.rd_req.r_offset = raw->d_next_offset;
 
 	client->executeRequest(r.rp, req);
 
@@ -1723,13 +1723,13 @@ pfsd_readdir_r(DIR *dir, struct dirent *entry, struct dirent **result)
 	} else {
 		*result = entry;
 
-		dir->d_data_size = req->rsp.rd_rsp.r_data_size;
-		memcpy(dir->d_data, dbuf, dir->d_data_size);
+		raw->d_data_size = req->rsp.rd_rsp.r_data_size;
+		memcpy(raw->d_data, dbuf, raw->d_data_size);
 
-		memcpy(entry, &dir->d_data[0], sizeof(*entry));
-		dir->d_data_offset = sizeof(*entry);
-		dir->d_next_ino = req->rsp.rd_rsp.r_ino;
-		dir->d_next_offset = req->rsp.rd_rsp.r_offset;
+		memcpy(entry, &raw->d_data[0], sizeof(*entry));
+		raw->d_data_offset = sizeof(*entry);
+		raw->d_next_ino = req->rsp.rd_rsp.r_ino;
+		raw->d_next_offset = req->rsp.rd_rsp.r_offset;
 	}
 
 	pfsd_free_req_and_buf(r);
@@ -1745,13 +1745,13 @@ pfsd_closedir(DIR *dir)
 		return -1;
 	}
 
-	dir = PFSD_DIR_RAW(dir);
-	if (!dir) {
+	pfsd_dirstream_t *raw = (pfsd_dirstream_t *)PFSD_DIR_RAW(dir);
+	if (!raw) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	PFSD_FREE(dir);
+	PFSD_FREE(raw);
 	return 0;
 }
 

@@ -338,7 +338,12 @@ void
 pfs_avl_add(pfs_avl_tree_t *tree, void *new_node)
 {
 	void *data;
-	uintptr_t where;
+	/*
+	 * Initialized to satisfy GCC -Wmaybe-uninitialized under LTO: the
+	 * analyzer cannot prove pfs_avl_find() always writes *where before
+	 * pfs_avl_insert() reads it, even though that holds when data == NULL.
+	 */
+	uintptr_t where = 0;
 
 	data = pfs_avl_find(tree, new_node, &where);
 	PFS_ASSERT(data == NULL);
