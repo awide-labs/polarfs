@@ -8,6 +8,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- After truncating a file down, a subsequent partial overwrite near the
+  start of the last block could silently zero part of the file's surviving
+  data; regression from XCOM-120 in 2.1.2 (XCOM-150)
+
 ## [2.1.6] - 2026-05-01
 
 ### Added

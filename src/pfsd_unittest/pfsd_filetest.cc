@@ -329,6 +329,415 @@ TEST_F(FileTest, pfsd_pwrite)
     CHECK_FILESIZE(fd_, 4*1024*1024+1);
 }
 
+/*
+ * Regression test for the eager hole-fill bug.
+ *
+ * pfs_file_write()'s hole branch tail-zeros the block on every write
+ * that observes a hole. After a truncate-down leaves the last block
+ * with a partial dbhoff, an overwrite that ends before dbhoff used to
+ * zero the surviving tail [blkoff+wlen, dbhoff). The fix gates the
+ * hole branch on blkoff+wlen > dbhoff, falling through to a plain
+ * data write otherwise.
+ *
+ * Reproducer (single block, blksize = 4 MiB):
+ *   1) pwrite 200K of 'A' at 0      -> file = 200K of 'A'
+ *   2) ftruncate to 100K            -> dbhoff for blk 0 becomes 100K
+ *   3) pwrite 50K of 'B' at 0       -> bug zeroes [50K, 100K)
+ *   4) ftruncate to 150K            -> exposes hole [100K, 150K)
+ *   5) pread [0, 150K) and verify [50K,100K)='A', [100K,150K)=0.
+ */
+TEST_F(FileTest, pfsd_pwrite_inside_truncated_block)
+{
+    const size_t big_len   = 200 * 1024;
+    const off_t  trunc_len = 100 * 1024;
+    const size_t small_len =  50 * 1024;
+    const size_t hole_len  =  50 * 1024;
+    const off_t  ext_len   = trunc_len + (off_t)hole_len;
+
+    char *buf_a = (char *)malloc(big_len);
+    char *buf_b = (char *)malloc(small_len);
+    char *check = (char *)malloc(ext_len);
+    ASSERT_NE(buf_a, nullptr);
+    ASSERT_NE(buf_b, nullptr);
+    ASSERT_NE(check, nullptr);
+    memset(buf_a, 'A', big_len);
+    memset(buf_b, 'B', small_len);
+
+    ssize_t n = pfsd_pwrite(fd_, buf_a, big_len, 0);
+    EXPECT_EQ(n, (ssize_t)big_len);
+    CHECK_FILESIZE(fd_, (off_t)big_len);
+
+    int err = pfsd_ftruncate(fd_, trunc_len);
+    EXPECT_EQ(err, 0);
+    CHECK_FILESIZE(fd_, trunc_len);
+
+    n = pfsd_pwrite(fd_, buf_b, small_len, 0);
+    EXPECT_EQ(n, (ssize_t)small_len);
+    CHECK_FILESIZE(fd_, trunc_len);
+
+    EXPECT_EQ(0, pfsd_ftruncate(fd_, ext_len));
+    CHECK_FILESIZE(fd_, ext_len);
+
+    n = pfsd_pread(fd_, check, ext_len, 0);
+    ASSERT_EQ(n, (ssize_t)ext_len);
+    for (size_t i = 0; i < small_len; i++)
+        ASSERT_EQ('B', check[i]) << "byte " << i << " in [0, 50K)";
+    for (size_t i = small_len; i < (size_t)trunc_len; i++)
+        ASSERT_EQ('A', check[i]) << "byte " << i << " in [50K, 100K) clobbered";
+    for (size_t i = (size_t)trunc_len; i < (size_t)ext_len; i++)
+        ASSERT_EQ(0, check[i]) << "hole byte " << i << " in [100K, 150K)";
+
+    free(buf_a);
+    free(buf_b);
+    free(check);
+}
+
+/*
+ * Write straddles dbhoff — starts inside the written
+ * prefix, ends in the hole. Hole branch fires; before-zero-fill is
+ * skipped (dbhoff > blkoff), after-zero-fill targets [blkoff+wlen,
+ * blksize) which is strictly inside the original hole.
+ *
+ *   pwrite 200K 'A' at 0     -> dbhoff = INT_MAX
+ *   ftruncate 100K           -> dbhoff = 100K
+ *   pwrite 100K 'B' at 50K   -> hole branch (50K+100K > 100K)
+ *   ftruncate 200K           -> exposes the after-zero-filled tail
+ *
+ * Expected: [0,50K)='A', [50K,150K)='B', [150K,200K)=0.
+ */
+TEST_F(FileTest, pfsd_pwrite_straddling_dbhoff)
+{
+    const size_t big = 200*1024, smallw = 100*1024, hole = 50*1024;
+    const off_t  trunc = 100*1024, off = 50*1024;
+    const off_t  data_end = off + (off_t)smallw;
+    const off_t  ext = data_end + (off_t)hole;
+
+    char *a = (char *)malloc(big);
+    char *b = (char *)malloc(smallw);
+    char *r = (char *)malloc(ext);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(r, nullptr);
+    memset(a, 'A', big);
+    memset(b, 'B', smallw);
+
+    EXPECT_EQ((ssize_t)big,    pfsd_pwrite(fd_, a, big, 0));
+    EXPECT_EQ(0,               pfsd_ftruncate(fd_, trunc));
+    EXPECT_EQ((ssize_t)smallw, pfsd_pwrite(fd_, b, smallw, off));
+    CHECK_FILESIZE(fd_, data_end);
+
+    EXPECT_EQ(0, pfsd_ftruncate(fd_, ext));
+    CHECK_FILESIZE(fd_, ext);
+
+    ASSERT_EQ((ssize_t)ext, pfsd_pread(fd_, r, ext, 0));
+    for (off_t i = 0; i < off; i++)
+        ASSERT_EQ('A', r[i]) << "byte " << i << " in [0,50K)";
+    for (off_t i = off; i < data_end; i++)
+        ASSERT_EQ('B', r[i]) << "byte " << i << " in [50K,150K)";
+    for (off_t i = data_end; i < ext; i++)
+        ASSERT_EQ(0, r[i]) << "hole byte " << i << " in [150K,200K)";
+
+    free(a);
+    free(b);
+    free(r);
+}
+
+/*
+ * Write entirely past dbhoff, deep in the hole.
+ * Exercises the before-zero-fill of [dbhoff, blkoff).
+ *
+ *   pwrite 200K 'A' at 0      -> dbhoff = INT_MAX
+ *   ftruncate 100K            -> dbhoff = 100K
+ *   pwrite 50K 'B' at 200K    -> hole branch (200K+50K > 100K)
+ *
+ * Expected: [0,100K)='A', [100K,200K)=0 (before-zero-fill),
+ *           [200K,250K)='B', size = 250K.
+ */
+TEST_F(FileTest, pfsd_pwrite_past_dbhoff_in_hole)
+{
+    const size_t big = 200*1024, smallw = 50*1024;
+    const off_t  trunc = 100*1024, off = 200*1024;
+    const off_t  fsize = off + (off_t)smallw;
+
+    char *a = (char *)malloc(big);
+    char *b = (char *)malloc(smallw);
+    char *r = (char *)malloc(fsize);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(r, nullptr);
+    memset(a, 'A', big);
+    memset(b, 'B', smallw);
+
+    EXPECT_EQ((ssize_t)big,    pfsd_pwrite(fd_, a, big, 0));
+    EXPECT_EQ(0,               pfsd_ftruncate(fd_, trunc));
+    EXPECT_EQ((ssize_t)smallw, pfsd_pwrite(fd_, b, smallw, off));
+    CHECK_FILESIZE(fd_, fsize);
+
+    ASSERT_EQ((ssize_t)fsize, pfsd_pread(fd_, r, fsize, 0));
+    for (off_t i = 0; i < trunc; i++)
+        ASSERT_EQ('A', r[i]) << "byte " << i << " in [0,100K)";
+    for (off_t i = trunc; i < off; i++)
+        ASSERT_EQ(0, r[i]) << "byte " << i << " in [100K,200K)";
+    for (off_t i = off; i < fsize; i++)
+        ASSERT_EQ('B', r[i]) << "byte " << i << " in [200K,250K)";
+
+    free(a);
+    free(b);
+    free(r);
+}
+
+/*
+ * Write fills the rest of the block exactly to
+ * blksize. Verifies the after-zero-fill is correctly skipped when
+ * blkoff+wlen == blksize.
+ *
+ *   pwrite 200K 'A' at 0                 -> dbhoff = INT_MAX
+ *   ftruncate 100K                       -> dbhoff = 100K
+ *   pwrite (blksize-100K) 'B' at 100K    -> hole branch, no after-fill
+ *   ftruncate blksize+50K                -> exposes block 1 (fresh hole)
+ *
+ * Expected: [0,100K)='A', [100K,blksize)='B', [blksize,blksize+50K)=0.
+ */
+TEST_F(FileTest, pfsd_pwrite_fills_block_to_end)
+{
+    const size_t blksize = 4*1024*1024, big = 200*1024, hole = 50*1024;
+    const off_t  trunc = 100*1024;
+    const size_t smallw = blksize - (size_t)trunc;
+    const off_t  ext = (off_t)blksize + (off_t)hole;
+
+    char *a = (char *)malloc(big);
+    char *b = (char *)malloc(smallw);
+    char *r = (char *)malloc(blksize);
+    char *hr = (char *)malloc(hole);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(r, nullptr);
+    ASSERT_NE(hr, nullptr);
+    memset(a, 'A', big);
+    memset(b, 'B', smallw);
+
+    EXPECT_EQ((ssize_t)big,    pfsd_pwrite(fd_, a, big, 0));
+    EXPECT_EQ(0,               pfsd_ftruncate(fd_, trunc));
+    EXPECT_EQ((ssize_t)smallw, pfsd_pwrite(fd_, b, smallw, trunc));
+    CHECK_FILESIZE(fd_, (off_t)blksize);
+
+    EXPECT_EQ(0, pfsd_ftruncate(fd_, ext));
+    CHECK_FILESIZE(fd_, ext);
+
+    /* pfsd_pread silently clamps to PFSD_MAX_IOSIZE (4 MiB), so read
+     * the data region and the hole region separately. */
+    ASSERT_EQ((ssize_t)blksize, pfsd_pread(fd_, r, blksize, 0));
+    for (off_t i = 0; i < trunc; i++)
+        ASSERT_EQ('A', r[i]) << "byte " << i << " in [0,100K)";
+    for (off_t i = trunc; i < (off_t)blksize; i++)
+        ASSERT_EQ('B', r[i]) << "byte " << i << " in [100K,blksize)";
+
+    ASSERT_EQ((ssize_t)hole, pfsd_pread(fd_, hr, hole, (off_t)blksize));
+    for (size_t i = 0; i < hole; i++)
+        ASSERT_EQ(0, hr[i]) << "hole byte " << i << " in [blksize,blksize+50K)";
+
+    free(a);
+    free(b);
+    free(r);
+    free(hr);
+}
+
+/*
+ * Write ends exactly at dbhoff (boundary case).
+ * The fix gates the hole branch on blkoff+wlen > dbhoff (strict). At
+ * blkoff+wlen == dbhoff we take the plain branch — dbhoff stays
+ * unchanged and [dbhoff, blksize) remains a hole.
+ *
+ *   pwrite 200K 'A' at 0       -> dbhoff = INT_MAX
+ *   ftruncate 100K             -> dbhoff = 100K
+ *   pwrite 100K 'B' at 0       -> blkoff+wlen == dbhoff, plain branch
+ *   ftruncate 250K (grow)      -> dbhoff unchanged
+ *
+ * Both buggy and fixed code produce identical readback because reads
+ * honor the in-memory hole metadata via memset (pfs_file.cc:610).
+ * Positive smoke test that the boundary case doesn't trip an assertion
+ * or scramble file size.
+ *
+ * Expected: [0,100K)='B', [100K,250K)=0 (read as hole), size = 250K.
+ */
+TEST_F(FileTest, pfsd_pwrite_ends_at_dbhoff_boundary)
+{
+    const size_t big = 200*1024, smallw = 100*1024;
+    const off_t  trunc = 100*1024, grow = 250*1024;
+
+    char *a = (char *)malloc(big);
+    char *b = (char *)malloc(smallw);
+    char *r = (char *)malloc(grow);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(r, nullptr);
+    memset(a, 'A', big);
+    memset(b, 'B', smallw);
+
+    EXPECT_EQ((ssize_t)big,    pfsd_pwrite(fd_, a, big, 0));
+    EXPECT_EQ(0,               pfsd_ftruncate(fd_, trunc));
+    EXPECT_EQ((ssize_t)smallw, pfsd_pwrite(fd_, b, smallw, 0));
+    CHECK_FILESIZE(fd_, trunc);
+
+    EXPECT_EQ(0, pfsd_ftruncate(fd_, grow));
+    CHECK_FILESIZE(fd_, grow);
+
+    ASSERT_EQ((ssize_t)grow, pfsd_pread(fd_, r, grow, 0));
+    for (off_t i = 0; i < trunc; i++)
+        ASSERT_EQ('B', r[i]) << "byte " << i << " in [0,100K)";
+    for (off_t i = trunc; i < grow; i++)
+        ASSERT_EQ(0, r[i]) << "byte " << i << " in [100K,250K) hole";
+
+    free(a);
+    free(b);
+    free(r);
+}
+
+/*
+ * Block already fully written, then partial overwrite.
+ * Verifies the plain branch (dbhoff = INT_MAX) leaves all surrounding
+ * bytes intact.
+ *
+ *   pwrite 4M 'A' at 0       -> hole branch fires once, dbhoff = INT_MAX
+ *   pwrite 8K 'B' at 1M      -> plain branch
+ *   ftruncate blksize+50K    -> exposes block 1 (fresh hole)
+ *
+ * Expected: [0,1M)='A', [1M,1M+8K)='B', [1M+8K,4M)='A',
+ *           [blksize,blksize+50K)=0.
+ */
+TEST_F(FileTest, pfsd_pwrite_inside_full_block)
+{
+    const size_t blksize = 4*1024*1024, smallw = 8*1024, hole = 50*1024;
+    const off_t  off = 1024*1024;
+    const off_t  ext = (off_t)blksize + (off_t)hole;
+
+    char *a = (char *)malloc(blksize);
+    char *b = (char *)malloc(smallw);
+    char *r = (char *)malloc(blksize);
+    char *hr = (char *)malloc(hole);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(r, nullptr);
+    ASSERT_NE(hr, nullptr);
+    memset(a, 'A', blksize);
+    memset(b, 'B', smallw);
+
+    EXPECT_EQ((ssize_t)blksize, pfsd_pwrite(fd_, a, blksize, 0));
+    EXPECT_EQ((ssize_t)smallw,  pfsd_pwrite(fd_, b, smallw, off));
+    CHECK_FILESIZE(fd_, (off_t)blksize);
+
+    EXPECT_EQ(0, pfsd_ftruncate(fd_, ext));
+    CHECK_FILESIZE(fd_, ext);
+
+    /* pfsd_pread silently clamps to PFSD_MAX_IOSIZE (4 MiB), so read
+     * the data region and the hole region separately. */
+    ASSERT_EQ((ssize_t)blksize, pfsd_pread(fd_, r, blksize, 0));
+    for (off_t i = 0; i < off; i++)
+        ASSERT_EQ('A', r[i]) << "byte " << i << " in [0,1M)";
+    for (off_t i = off; i < off + (off_t)smallw; i++)
+        ASSERT_EQ('B', r[i]) << "byte " << i << " in [1M,1M+8K)";
+    for (off_t i = off + (off_t)smallw; i < (off_t)blksize; i++)
+        ASSERT_EQ('A', r[i]) << "byte " << i << " in [1M+8K,4M)";
+
+    ASSERT_EQ((ssize_t)hole, pfsd_pread(fd_, hr, hole, (off_t)blksize));
+    for (size_t i = 0; i < hole; i++)
+        ASSERT_EQ(0, hr[i]) << "hole byte " << i << " in [blksize,blksize+50K)";
+
+    free(a);
+    free(b);
+    free(r);
+    free(hr);
+}
+
+/*
+ * Two truncate-then-overwrite cycles, each
+ * overwrite shorter than the previous dbhoff. The fix must keep the
+ * surviving tail intact across both cycles.
+ *
+ *   pwrite 200K 'A' at 0   -> dbhoff = INT_MAX
+ *   ftruncate 150K         -> dbhoff = 150K
+ *   pwrite 100K 'B' at 0   -> 100K <= 150K, plain branch, dbhoff stays 150K
+ *   ftruncate 80K          -> dbhoff = 80K (expand_dblk_hole)
+ *   pwrite 30K 'C' at 0    -> 30K <= 80K, plain branch, dbhoff stays 80K
+ *   ftruncate 130K         -> exposes hole [80K,130K)
+ *
+ * Expected: [0,30K)='C', [30K,80K)='B', [80K,130K)=0.
+ *
+ * Buggy code zeroes [30K,80K) (and beyond) at the second pwrite because
+ * its hole branch unconditionally tail-zero-fills [blkoff+wlen, blksize).
+ */
+TEST_F(FileTest, pfsd_pwrite_repeated_truncate_overwrite)
+{
+    const size_t big = 200*1024, mid = 100*1024, smallw = 30*1024;
+    const size_t hole = 50*1024;
+    const off_t  trunc1 = 150*1024, trunc2 = 80*1024;
+    const off_t  ext = trunc2 + (off_t)hole;
+
+    char *a = (char *)malloc(big);
+    char *b = (char *)malloc(mid);
+    char *c = (char *)malloc(smallw);
+    char *r = (char *)malloc(ext);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(c, nullptr);
+    ASSERT_NE(r, nullptr);
+    memset(a, 'A', big);
+    memset(b, 'B', mid);
+    memset(c, 'C', smallw);
+
+    EXPECT_EQ((ssize_t)big,    pfsd_pwrite(fd_, a, big, 0));
+    EXPECT_EQ(0,               pfsd_ftruncate(fd_, trunc1));
+    EXPECT_EQ((ssize_t)mid,    pfsd_pwrite(fd_, b, mid, 0));
+    EXPECT_EQ(0,               pfsd_ftruncate(fd_, trunc2));
+    EXPECT_EQ((ssize_t)smallw, pfsd_pwrite(fd_, c, smallw, 0));
+    CHECK_FILESIZE(fd_, trunc2);
+
+    EXPECT_EQ(0, pfsd_ftruncate(fd_, ext));
+    CHECK_FILESIZE(fd_, ext);
+
+    ASSERT_EQ((ssize_t)ext, pfsd_pread(fd_, r, ext, 0));
+    for (off_t i = 0; i < (off_t)smallw; i++)
+        ASSERT_EQ('C', r[i]) << "byte " << i << " in [0,30K)";
+    for (off_t i = (off_t)smallw; i < trunc2; i++)
+        ASSERT_EQ('B', r[i]) << "byte " << i << " in [30K,80K) clobbered";
+    for (off_t i = trunc2; i < ext; i++)
+        ASSERT_EQ(0, r[i]) << "hole byte " << i << " in [80K,130K)";
+
+    free(a);
+    free(b);
+    free(c);
+    free(r);
+}
+
+/*
+ * Sparse write — one byte deep into a fresh block.
+ * The hole branch must zero-fill [0, offset) before writing user data,
+ * else readback returns uninitialized disk content for the head.
+ *
+ *   pwrite 1B 'X' at 3M    -> hole branch: before-fill [0,3M), data, after-fill
+ *
+ * Expected: read [0,3M+1) returns 3M zeros + 'X'.
+ */
+TEST_F(FileTest, pfsd_pwrite_sparse_then_read_zeros)
+{
+    const off_t  off = 3*1024*1024;
+    const size_t headlen = (size_t)off + 1;
+    char x = 'X';
+
+    char *r = (char *)malloc(headlen);
+    ASSERT_NE(r, nullptr);
+
+    EXPECT_EQ((ssize_t)1, pfsd_pwrite(fd_, &x, 1, off));
+    CHECK_FILESIZE(fd_, off + 1);
+
+    ASSERT_EQ((ssize_t)headlen, pfsd_pread(fd_, r, headlen, 0));
+    for (off_t i = 0; i < off; i++)
+        ASSERT_EQ(0, r[i]) << "byte " << i << " in [0,3M) head";
+    ASSERT_EQ('X', r[off]);
+
+    free(r);
+}
+
 TEST_F(FileTest, pfsd_read)
 {
     __attribute__((unused)) off_t newpos;

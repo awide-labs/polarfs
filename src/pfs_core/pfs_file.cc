@@ -703,26 +703,39 @@ pfs_file_write(pfs_inode_t *in, const void *buf, size_t len, off_t *off,
 		 */
 		PFS_ASSERT(locked || dbhoff >= (off_t)blksize ||
 		    !pfs_version_has_features(mnt, PFS_FEATURE_BLKHOLE));
+
+		wlen = MIN(blksize - blkoff, left);
+
+		/*
+		 * Enter the eager hole-fill path only when this write
+		 * actually extends past dbhoff. Otherwise the post-data
+		 * zero-fill at [blkoff+wlen, blksize) would clobber the
+		 * already-written tail [blkoff+wlen, dbhoff). Writes
+		 * fully inside [0, dbhoff) fall through to the plain
+		 * data-write path and leave hole metadata alone.
+		 */
 		if (dbhoff < (off_t)blksize &&
+		    blkoff + wlen > dbhoff &&
 		    pfs_version_has_features(mnt, PFS_FEATURE_BLKHOLE)) {
 			/*
-			 * Block has a hole. Zero-fill the untouched parts
-			 * and write actual data in one pass, eliminating
-			 * the hole so that all future writes to this block
-			 * skip per-write hole metadata updates.
+			 * Block has a hole and this write extends it.
+			 * Zero-fill the untouched parts of the block and
+			 * write actual data in one pass, eliminating the
+			 * hole so that all future writes to this block skip
+			 * per-write hole metadata updates.
 			 *
 			 * Layout within the block:
-			 *   [0 .. dbhoff)           already written
-			 *   [dbhoff .. blkoff)      hole gap before data → zero
-			 *   [blkoff .. blkoff+wlen) user data
+			 *   [0 .. dbhoff)            already written
+			 *   [dbhoff .. blkoff)       hole gap before data → zero
+			 *   [blkoff .. blkoff+wlen)  user data
 			 *   [blkoff+wlen .. blksize) hole gap after data → zero
+			 *                            (⊂ original hole because
+			 *                             blkoff+wlen > dbhoff)
 			 *
 			 * The inode lock is held during all I/O to prevent
 			 * concurrent writes from racing with our zeros on
 			 * the same block.
 			 */
-			wlen = MIN(blksize - blkoff, left);
-
 			pfs_inode_writemodify_shrink_dblk_hole(in, blkid,
 			    blksize, 0);
 
@@ -755,7 +768,6 @@ pfs_file_write(pfs_inode_t *in, const void *buf, size_t len, off_t *off,
 			}
 		} else {
 			woff = blkoff;
-			wlen = MIN(blksize - blkoff, left);
 			pdata = data + wsum;
 
 			if (offset + wlen > fsize) {
