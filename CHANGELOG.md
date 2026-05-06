@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.7] - 2026-05-06
+
 ### Fixed
 
 - After truncating a file down, a subsequent partial overwrite near the
@@ -137,7 +139,8 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.6..master
+[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.7..master
+[2.1.7]: https://github.com/Awydex/polarfs/compare/v2.1.6..v2.1.7
 [2.1.6]: https://github.com/Awydex/polarfs/compare/v2.1.5..v2.1.6
 [2.1.5]: https://github.com/Awydex/polarfs/compare/v2.1.4..v2.1.5
 [2.1.4]: https://github.com/Awydex/polarfs/compare/v2.1.3..v2.1.4
