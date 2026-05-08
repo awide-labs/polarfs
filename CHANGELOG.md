@@ -10,6 +10,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+## [2.1.8] - 2026-05-08
+
+### Changed
+
 - Release builds now also pass `-ffat-lto-objects` (GCC only) so that each `.o`
   carries both GIMPLE bytecode and a regular optimized `.text`. Consumers that
   link `libpfsd` without `-flto` then take the regular code path and skip the
@@ -148,7 +152,8 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.7..master
+[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.8..master
+[2.1.8]: https://github.com/Awydex/polarfs/compare/v2.1.7..v2.1.8
 [2.1.7]: https://github.com/Awydex/polarfs/compare/v2.1.6..v2.1.7
 [2.1.6]: https://github.com/Awydex/polarfs/compare/v2.1.5..v2.1.6
 [2.1.5]: https://github.com/Awydex/polarfs/compare/v2.1.4..v2.1.5
