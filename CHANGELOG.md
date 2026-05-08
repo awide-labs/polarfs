@@ -8,6 +8,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Release builds now also pass `-ffat-lto-objects` (GCC only) so that each `.o`
+  carries both GIMPLE bytecode and a regular optimized `.text`. Consumers that
+  link `libpfsd` without `-flto` then take the regular code path and skip the
+  multi-second LTO codegen pass that the linker plugin would otherwise trigger
+  for every consumer binary. Static archive size roughly doubles; release-build
+  LTO behavior is unchanged. (XCOM-152)
+
 ## [2.1.7] - 2026-05-06
 
 ### Fixed

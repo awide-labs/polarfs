@@ -98,10 +98,18 @@ set(CMAKE_C_FLAGS_RELEASE "$ENV{CXXFLAGS} -O2 -finline-limit=100000 -DNDEBUG -DC
 # cmake_minimum_required(3.5), which leaves CMP0069 unset so IPO would warn
 # and be ignored for Folly targets unless we patch upstream CMakeLists.
 # Disable LTO with -DPFSD_ENABLE_LTO=OFF.
+#
+# We also pass -ffat-lto-objects (GCC only) so that each .o carries BOTH GIMPLE
+# bytecode AND a regular optimized .text section. Consumers that link libpfsd
+# without -flto then use the regular code path and skip the multi-second LTO
+# codegen pass that the linker plugin would otherwise trigger for every consumer
+# binary. Clang has no exact fat-LTO equivalent, so this only applies to GCC.
 option(PFSD_ENABLE_LTO "Enable link-time optimization for Release builds" ON)
 if(PFSD_ENABLE_LTO)
+  set(_pfsd_lto_compile_extra "")
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(_pfsd_lto_flag "-flto=auto")
+    set(_pfsd_lto_compile_extra "-ffat-lto-objects")
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
     set(_pfsd_lto_flag "-flto=thin")
   else()
@@ -113,8 +121,21 @@ if(PFSD_ENABLE_LTO)
     check_cxx_compiler_flag("${_pfsd_lto_flag}" _pfsd_cxx_lto_ok)
     check_c_compiler_flag("${_pfsd_lto_flag}" _pfsd_c_lto_ok)
     if(_pfsd_cxx_lto_ok AND _pfsd_c_lto_ok)
+      # Probe -ffat-lto-objects independently: very old GCCs accept -flto
+      # but not -ffat-lto-objects. If unsupported, drop it silently.
+      if(_pfsd_lto_compile_extra)
+        check_cxx_compiler_flag("${_pfsd_lto_compile_extra}" _pfsd_cxx_fat_ok)
+        check_c_compiler_flag("${_pfsd_lto_compile_extra}" _pfsd_c_fat_ok)
+        if(NOT (_pfsd_cxx_fat_ok AND _pfsd_c_fat_ok))
+          set(_pfsd_lto_compile_extra "")
+        endif()
+      endif()
       string(APPEND CMAKE_CXX_FLAGS_RELEASE " ${_pfsd_lto_flag}")
       string(APPEND CMAKE_C_FLAGS_RELEASE " ${_pfsd_lto_flag}")
+      if(_pfsd_lto_compile_extra)
+        string(APPEND CMAKE_CXX_FLAGS_RELEASE " ${_pfsd_lto_compile_extra}")
+        string(APPEND CMAKE_C_FLAGS_RELEASE " ${_pfsd_lto_compile_extra}")
+      endif()
       string(APPEND CMAKE_EXE_LINKER_FLAGS " ${_pfsd_lto_flag}")
       string(APPEND CMAKE_SHARED_LINKER_FLAGS " ${_pfsd_lto_flag}")
       # Do not append to CMAKE_STATIC_LINKER_FLAGS: that is passed to `ar`
@@ -146,7 +167,11 @@ if(PFSD_ENABLE_LTO)
           set(CMAKE_C_COMPILER_RANLIB "${_pfsd_gcc_ranlib}" CACHE FILEPATH "" FORCE)
         endif()
       endif()
-      message(STATUS "LTO enabled (${_pfsd_lto_flag} on Release compile; exe/shared link)")
+      if(_pfsd_lto_compile_extra)
+        message(STATUS "LTO enabled (${_pfsd_lto_flag} ${_pfsd_lto_compile_extra} on Release compile; ${_pfsd_lto_flag} on exe/shared link)")
+      else()
+        message(STATUS "LTO enabled (${_pfsd_lto_flag} on Release compile; exe/shared link)")
+      endif()
     else()
       message(WARNING "LTO flag ${_pfsd_lto_flag} not accepted by C or C++ compiler")
     endif()
