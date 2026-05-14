@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.9] - 2026-05-14
+
 ### Removed
 
 - Build-time dependencies on folly, fmt, glog, double-conversion, and
@@ -155,7 +157,8 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.8..master
+[unreleased]: https://github.com/Awydex/polarfs/compare/v2.1.9..master
+[2.1.9]: https://github.com/Awydex/polarfs/compare/v2.1.8..v2.1.9
 [2.1.8]: https://github.com/Awydex/polarfs/compare/v2.1.7..v2.1.8
 [2.1.7]: https://github.com/Awydex/polarfs/compare/v2.1.6..v2.1.7
 [2.1.6]: https://github.com/Awydex/polarfs/compare/v2.1.5..v2.1.6
