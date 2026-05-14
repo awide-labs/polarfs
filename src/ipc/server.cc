@@ -2,9 +2,7 @@
 
 namespace ipc {
 
-void Server::connectionAccepted(folly::NetworkSocket fd,
-                                const folly::SocketAddress &clientAddr,
-                                AcceptInfo info) noexcept {
+void Server::onAccept(int fd) {
   pfsd_info("Client connected");
   uint64_t clientId = nextClientId_.fetch_add(1);
   auto client = std::make_unique<ClientContext>(evb_, fd, this, clientId);

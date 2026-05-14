@@ -17,8 +17,6 @@ include_directories(
 	${PROJECT_SOURCE_DIR}/src/pfsd/
 	${PROJECT_SOURCE_DIR}/src/pfs_sdk/
     ${PROJECT_SOURCE_DIR}/src/trace/include/
-    ${PROJECT_BINARY_DIR}/folly/
-    ${PROJECT_SOURCE_DIR}/folly/
     ${PROJECT_SOURCE_DIR}/src/
 )
 
@@ -69,8 +67,6 @@ target_link_libraries(pfs-tools
     -Wl,--no-as-needed
     pfs
     pfsd
-    folly
-    glog
 	pthread
     -Wl,--end-group
 )

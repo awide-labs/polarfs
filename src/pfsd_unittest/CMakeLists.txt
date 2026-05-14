@@ -16,8 +16,6 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/src/pfs_core/
     ${PROJECT_SOURCE_DIR}/src/pfs_sdk/
     ${PROJECT_SOURCE_DIR}/src/trace/include/
-    ${PROJECT_BINARY_DIR}/third-party/folly/
-    ${PROJECT_SOURCE_DIR}/third-party/folly/
     ${PROJECT_SOURCE_DIR}/src/
     ${PROJECT_SOURCE_DIR}/
 )
@@ -37,7 +35,6 @@ add_executable(pfsd_filetest
 target_link_libraries(pfsd_filetest
     pfsd
     gtest
-    folly
 )
 
 add_executable(pfsd_cachetest
@@ -46,7 +43,6 @@ add_executable(pfsd_cachetest
 
 target_link_libraries(pfsd_cachetest
     pfs
-    folly
 )
 
 add_executable(pfsd_perftest
@@ -55,7 +51,6 @@ add_executable(pfsd_perftest
 
 target_link_libraries(pfsd_perftest
     pfs
-    folly
 )
 
 add_executable(pfs_lease_hold
@@ -64,7 +59,6 @@ add_executable(pfs_lease_hold
 
 target_link_libraries(pfs_lease_hold
     pfs
-    folly
 )
 
 add_executable(pfs_hole_bench
@@ -73,7 +67,6 @@ add_executable(pfs_hole_bench
 
 target_link_libraries(pfs_hole_bench
     pfs
-    folly
 )
 
 add_executable(pfsd_ebusy_test
@@ -82,7 +75,6 @@ add_executable(pfsd_ebusy_test
 
 target_link_libraries(pfsd_ebusy_test
     pfsd
-    folly
 )
 
 add_executable(pfs_inode_lru_test
@@ -91,5 +83,4 @@ add_executable(pfs_inode_lru_test
 
 target_link_libraries(pfs_inode_lru_test
     pfs
-    folly
 )

@@ -55,11 +55,9 @@ fi
 #install
 install -m 0644 src/pfs_sdk/pfsd_sdk.h			${INSTALL_BASE_DIR}/pfsd/include/pfsd_sdk.h
 install -m 0755 lib/libpfsd.a				${INSTALL_BASE_DIR}/pfsd/lib/libpfsd.a
-install -m 0755 lib/libfolly.a				${INSTALL_BASE_DIR}/pfsd/lib/libfolly.a
 install -m 0755 lib/libpfsd_test.so			${INSTALL_BASE_DIR}/pfsd/lib/libpfsd_test.so
 install -m 0644 src/pfs_core/pfs_api.h			${INSTALL_BASE_DIR}/pfs_core/include/pfs_api.h
 install -m 0755 lib/libpfs.a				${INSTALL_BASE_DIR}/pfs_core/lib/libpfs.a
-install -m 0755 lib/libfolly.a				${INSTALL_BASE_DIR}/pfs_core/lib/libfolly.a
 install -m 0755 bin/pfsdaemon				${INSTALL_BASE_DIR}/pfsd/bin/pfsdaemon
 install -m 0755 bin/pfs-fuse                            ${INSTALL_BASE_DIR}/pfsd/bin/pfs-fuse
 install -m 0644 conf/pfsd_logger.conf			${INSTALL_BASE_DIR}/pfsd/conf/pfsd_logger.conf

@@ -16,8 +16,6 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/src/pfs_sdk/
     ${PROJECT_SOURCE_DIR}/src/pfs_core/
     ${PROJECT_SOURCE_DIR}/src/trace/include/
-    ${PROJECT_BINARY_DIR}/third-party/folly/
-    ${PROJECT_SOURCE_DIR}/third-party/folly/
     ${PROJECT_SOURCE_DIR}/src/
 )
 
@@ -31,6 +29,9 @@ SET(SRC_LIST_PFSD_SDK pfsd_common.cc
                       pfsd_sdk_mount.cc
                       pfsd_sdk.cc
                       ../pfs_core/lib/dclcrwlock.cc
+                      ../ipc/access_spreader.cc
+                      ../ipc/pfs_event_loop.cc
+                      ../ipc/pfs_unix_socket.cc
     )
 # objects
 add_library(tmp_object_lib OBJECT ${SRC_LIST_PFSD_SDK})

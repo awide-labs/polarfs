@@ -13,6 +13,7 @@
  * limitations under the License.
  */
 
+#include <bit>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/mman.h>
@@ -256,7 +257,7 @@ pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
 	if (s_n_custom_mem_pools == 0) {
 		for (auto param : defaultMemPoolParams) {
 			auto mempool =
-				std::make_unique<ipc::SharedIndexedMemPool<> >(
+				std::make_unique<ipc::SharedIndexedMemPool >(
 					std::string("mempool-") +
 						std::to_string(param.size),
 					param.size * 1024, param.capacity,
@@ -271,7 +272,7 @@ pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
 	}
 
 	{
-		auto mempool = std::make_unique<ipc::SharedIndexedMemPool<> >(
+		auto mempool = std::make_unique<ipc::SharedIndexedMemPool >(
 			std::string("mempool-req"), sizeof(ipc::Request), 2048,
 			32, 32);
 		mempool->zeroInit();
@@ -1881,8 +1882,8 @@ pfsd_alloc_shared_mem_pool(const char *name, size_t elem_size, size_t capacity,
 		client = new ipc::Session;
 	}
 
-	const auto real_elem_size = folly::nextPowTwo(elem_size);
-	auto pool = std::make_unique<ipc::SharedIndexedMemPool<> >(
+	const auto real_elem_size = std::bit_ceil(elem_size);
+	auto pool = std::make_unique<ipc::SharedIndexedMemPool >(
 		name, real_elem_size, capacity, num_local_lists,
 		local_list_limit);
 	if (client->registerMemPool(std::move(pool), false)) {

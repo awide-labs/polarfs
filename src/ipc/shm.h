@@ -2,13 +2,20 @@
 
 #include "SharedIndexedMemPool.h"
 #include "memfd.h"
+#include "pfs_align.h"
 #include "pfsd_common.h"
 #include "proto.h"
 #include <algorithm>
+#include <atomic>
+#include <bit>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace ipc {
@@ -29,12 +36,12 @@ struct SharedMemoryPools {
 
   SharedMemoryPools() {}
 
-  uint64_t addPool(std::unique_ptr<SharedIndexedMemPool<>> pool) {
+  uint64_t addPool(std::unique_ptr<SharedIndexedMemPool> pool) {
     auto id = nextId_.fetch_add(1, std::memory_order_relaxed);
     if (pool->elemSize() % 1024 != 0) {
       throw std::runtime_error("Mempool element size must be multiple of 1024");
     }
-    if (!folly::isPowTwo(pool->elemSize() / 1024)) {
+    if (!std::has_single_bit(pool->elemSize() / 1024)) {
       throw std::runtime_error("Mempool element size must be pow of two KiB");
     }
     pools_.push_back(std::move(pool));
@@ -46,7 +53,7 @@ struct SharedMemoryPools {
     return id;
   }
 
-  uint64_t addRequestsPool(std::unique_ptr<SharedIndexedMemPool<>> pool) {
+  uint64_t addRequestsPool(std::unique_ptr<SharedIndexedMemPool> pool) {
     auto id = nextId_.fetch_add(1, std::memory_order_relaxed);
     requestsPoolId_ = id;
     requestsPool_ = std::move(pool);
@@ -66,8 +73,8 @@ struct SharedMemoryPools {
   bool alloc(size_t size, AllocResult &r) {
     // Calculate the power of two exponent (log2) of the requested size in KiB
     const size_t sizeKiB = (size + 1023) / 1024;
-    const size_t roundSize = folly::nextPowTwo(sizeKiB);
-    const unsigned bucket = folly::findLastSet(roundSize) - 1;
+    const size_t roundSize = std::bit_ceil(sizeKiB);
+    const unsigned bucket = std::bit_width(roundSize) - 1;
 
     // We don't have a pool capable to serve allocations this large
     if (bucket >= poolSizeIndices_.size()) {
@@ -203,7 +210,7 @@ private:
     for (unsigned i = 0; i < pools_.size(); i++) {
       auto &p = pools_[i];
       auto size = p->elemSize() / 1024;
-      auto power = size > 1 ? folly::findLastSet(size) - 1 : 0;
+      unsigned power = size > 1 ? unsigned(std::bit_width(size)) - 1 : 0;
       powers.emplace_back(i, power);
       maxPower = std::max(power, maxPower);
     }
@@ -261,9 +268,9 @@ private:
     }
   }
 
-  std::unique_ptr<SharedIndexedMemPool<>> requestsPool_;
+  std::unique_ptr<SharedIndexedMemPool> requestsPool_;
   uint64_t requestsPoolId_;
-  std::vector<std::unique_ptr<SharedIndexedMemPool<>>> pools_;
+  std::vector<std::unique_ptr<SharedIndexedMemPool>> pools_;
   std::vector<uint64_t> poolIds_;
   std::vector<std::unique_ptr<MemFd>> rawBuffers_;
   std::vector<uint64_t> rawBufferIds_;
@@ -321,7 +328,7 @@ public:
             static_cast<uint8_t *>(buf),
             size,
             align)) {
-    state_->top = folly::align_ceil(state_->buffer, state_->alignment);
+    state_->top = pfsutil::align_ceil(state_->buffer, state_->alignment);
   }
 
   template <typename U>
@@ -330,7 +337,7 @@ public:
   T *allocate(std::size_t n) {
     const std::size_t size = n * sizeof(T);
     void *ptr = state_->top;
-    state_->top = folly::align_ceil(state_->top + size, state_->alignment);
+    state_->top = pfsutil::align_ceil(state_->top + size, state_->alignment);
     if (state_->top - state_->buffer > state_->capacity) {
       throw std::bad_alloc();
     }
@@ -339,7 +346,7 @@ public:
 
   void deallocate(T *p, std::size_t n) {
     const std::size_t size = n * sizeof(T);
-    state_->top = folly::align_floor(state_->top - size, state_->alignment);
+    state_->top = pfsutil::align_floor(state_->top - size, state_->alignment);
     assert(reinterpret_cast<T *>(state_->top) == p);
   }
 

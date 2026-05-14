@@ -1,12 +1,26 @@
-#include <folly/SocketAddress.h>
-#include <folly/io/Cursor.h>
-#include <folly/io/async/EventBase.h>
-#include <folly/io/async/fdsock/AsyncFdSocket.h>
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <queue>
 #include <semaphore.h>
+#include <shared_mutex>
+#include <string>
+#include <system_error>
+#include <thread>
+#include <vector>
 
 #include "SharedIndexedMemPool.h"
+#include "access_spreader.h"
 #include "lib/dclcrwlock.h"
 #include "memfd.h"
+#include "pfs_event_loop.h"
+#include "pfs_unix_socket.h"
 #include "proto.h"
 #include "shm.h"
 
@@ -27,7 +41,7 @@ public:
   BestOfTwoPolicy(std::vector<Queue> queues) : queues_(queues) {}
 
   Queue pick() {
-    auto *q1 = queues_[folly::AccessSpreader<>::current(queues_.size())];
+    auto *q1 = queues_[pfsutil::AccessSpreader::current(queues_.size())];
     if (q1->size() < QUEUE_DEPTH_LOOKUP_THRESHOLD) {
       return q1;
     }
@@ -44,15 +58,12 @@ private:
   std::vector<Queue> queues_;
 };
 
-class Session : public folly::AsyncSocket::ConnectCallback,
-                public folly::AsyncTransport::WriteCallback,
-                public folly::AsyncTransport::ReadCallback {
+class Session {
   using LoadBalancingPolicy = BestOfTwoPolicy<Queue *>;
 
 public:
   explicit Session()
-      : bufferQueue_(folly::IOBufQueue::cacheChainLength()), error_(false),
-        connected_(false), queuesAreReady_(false),
+      : error_(false), connected_(false), queuesAreReady_(false),
         serverHelloReceived_(false, 0), ackReceived_(false), forkChild_(false) {
     rwLock_.init();
   }
@@ -63,14 +74,22 @@ public:
 
   bool start(std::string cluster, int host_id, int flags, int timeoutMs) {
     eventLoopThread_ = std::thread([this] {
-      std::string sockPath = makeSockPath(pbdname_);
-      folly::SocketAddress addr;
-      addr.setFromPath(sockPath);
-      socket_ = std::make_unique<folly::AsyncFdSocket>(&evb_);
-      socket_->connect(this, addr, 1000); // timeout: 1000ms
-      socket_->setReadCB(this);
-      fdSeqNum_ = 0;
+      try {
+        std::string sockPath = makeSockPath(pbdname_);
+        int fd = pfsutil::connectUnix(sockPath, 1000);
+        socket_ = std::make_unique<pfsutil::UnixSocket>(&evb_, fd);
+        socket_->setReadCallback(
+            [this](const uint8_t *data, size_t len) { onBytes(data, len); },
+            [this] { onEof(); },
+            [this](int err) { onError(err); });
+        postEvent([this] { connected_ = true; });
+      } catch (const std::system_error &ex) {
+        PFSD_CLIENT_ELOG("Connection error: '%s'", ex.what());
+        postEvent([this] { error_ = true; });
+        return;
+      }
 
+      fdSeqNum_ = 0;
       evb_.loopForever();
       queuesAreReady_ = false;
       queues_.clear();
@@ -106,8 +125,8 @@ public:
     if (forkChild_) {
       return true;
     }
-    evb_.runInEventBaseThread([this] { socket_->close(); });
-    evb_.terminateLoopSoon();
+    evb_.runInLoop([this] { socket_.reset(); });
+    evb_.terminate();
     eventLoopThread_.join();
     pools_.clear();
     return true;
@@ -125,7 +144,7 @@ public:
   }
 
   std::optional<uint64_t>
-  registerMemPool(std::unique_ptr<SharedIndexedMemPool<>> pool,
+  registerMemPool(std::unique_ptr<SharedIndexedMemPool> pool,
                   bool requestPool) {
     std::lock_guard lk(rwLock_);
     uint64_t id;
@@ -184,25 +203,22 @@ private:
   bool sendBuffers() {
     std::shared_lock lk(rwLock_);
 
-    folly::SocketFds::ToSend toSend;
+    std::vector<int> toSend;
     RegisterBuffersMessage message;
 
     for (auto desc : pools_.allBuffers()) {
       message.buffers.push_back(BufferDesc{desc.id, desc.size});
-      toSend.push_back(std::make_shared<folly::File>(desc.fd));
+      toSend.push_back(desc.fd);
       PFSD_CLIENT_LOG("Sending buf %zu size %zu", desc.id, desc.size);
     }
 
     ackReceived_ = false;
 
-    evb_.runInEventBaseThreadAndWait([this, &message, &toSend] {
-      folly::SocketFds sockFds(toSend);
-      if (sockFds.empty()) {
-        socket_->writeChain(this, message.serialize());
+    evb_.runInLoopAndWait([this, &message, &toSend] {
+      if (toSend.empty()) {
+        socket_->write(message.serialize());
       } else {
-        sockFds.setFdSocketSeqNumOnce(fdSeqNum_);
-        socket_->writeChainWithFds(this, message.serialize(),
-                                   std::move(sockFds));
+        socket_->writeWithFds(message.serialize(), std::move(toSend));
         fdSeqNum_ += message.buffers.size();
       }
       PFSD_CLIENT_LOG("Sent %zu memfds to server", message.buffers.size());
@@ -214,14 +230,14 @@ private:
   }
 
   int sendHello(std::string cluster, int host_id, int flags, int timeoutMs) {
-    evb_.runInEventBaseThreadAndWait([&cluster, this, host_id, flags] {
+    evb_.runInLoopAndWait([&cluster, this, host_id, flags] {
       ClientHelloMessage message;
       message.cluster = cluster;
       message.pbdname = pbdname_;
       message.host_id = host_id;
       message.flags = flags;
 
-      socket_->writeChain(this, message.serialize());
+      socket_->write(message.serialize());
     });
 
     waitEventMs([this] { return serverHelloReceived_.first; }, timeoutMs);
@@ -236,14 +252,14 @@ private:
   int sendRemount(std::string cluster, int host_id, int flags, int timeoutMs) {
     remountResult_.first = false;
 
-    evb_.runInEventBaseThreadAndWait([&cluster, this, host_id, flags] {
+    evb_.runInLoopAndWait([&cluster, this, host_id, flags] {
       RemountMessage message;
       message.cluster = cluster;
       message.pbdname = pbdname_;
       message.host_id = host_id;
       message.flags = flags;
 
-      socket_->writeChain(this, message.serialize());
+      socket_->write(message.serialize());
     });
 
     waitEventMs([this] { return remountResult_.first; }, timeoutMs);
@@ -257,87 +273,47 @@ private:
     return remountResult_.second;
   }
 
-  void connectSuccess() noexcept override {
-    PFSD_CLIENT_LOG("Connected server");
-    postEvent([this] { connected_ = true; });
-  }
+  void onBytes(const uint8_t *data, size_t len) {
+    PFSD_CLIENT_LOG("Client received: %zu bytes", len);
+    readBuf_.insert(readBuf_.end(), data, data + len);
 
-  void connectErr(const folly::AsyncSocketException &ex) noexcept override {
-    PFSD_CLIENT_ELOG("Connection error: '%s'", ex.what());
-    postEvent([this] { error_ = true; });
-  }
-
-  void writeSuccess() noexcept override { PFSD_CLIENT_LOG("Write success"); }
-
-  void writeErr(size_t bytesWritten,
-                const folly::AsyncSocketException &ex) noexcept override {
-    PFSD_CLIENT_ELOG("Write error: '%s', bytes written: %zu", ex.what(),
-                     bytesWritten);
-  }
-
-  void getReadBuffer(void **buf, size_t *len) noexcept override {
-    *buf = transferBuf_;
-    *len = sizeof(transferBuf_);
-  }
-
-  void readDataAvailable(size_t recvLen) noexcept override {
-    PFSD_CLIENT_LOG("Client received: %zu bytes", recvLen);
-
-    bufferQueue_.append(folly::IOBuf::copyBuffer(transferBuf_, recvLen));
-
-    while (bufferQueue_.chainLength() > 0) {
+    while (!readBuf_.empty()) {
       int type;
-      size_t len;
-
-      if (!readMessageTypeAndLen(bufferQueue_.front(), type, len)) {
+      size_t msgLen;
+      if (!readMessageTypeAndLen(readBuf_.data(), readBuf_.size(), type,
+                                 msgLen)) {
         break;
       }
-
-      PFSD_CLIENT_LOG("Got message type: %d len: %zu", type, len);
-
-      if (bufferQueue_.chainLength() < len) {
+      PFSD_CLIENT_LOG("Got message type: %d len: %zu", type, msgLen);
+      if (readBuf_.size() < msgLen) {
         break;
       }
-
-      auto iobuf = bufferQueue_.split(len);
+      const uint8_t *msg = readBuf_.data();
 
       if (type == ACK) {
         AckMessage message;
-
-        if (!message.deserialize(iobuf)) {
+        if (!message.deserialize(msg, msgLen)) {
           break;
         }
-
         postEvent([this] { ackReceived_ = true; });
-      }
-
-      if (type == REGISTER_QUEUES) {
+      } else if (type == REGISTER_QUEUES) {
         RegisterQueuesMessage message;
-
-        if (!message.deserialize(iobuf)) {
+        if (!message.deserialize(msg, msgLen)) {
           break;
         }
-
-        int i = 0;
-        for (auto &buf : message.buffers) {
+        for (size_t i = 0; i < message.buffers.size(); ++i) {
           PFSD_CLIENT_LOG("Client received queue buffer id: %lu size: %zu",
                           message.buffers[i].id, message.buffers[i].size);
-          i++;
         }
-
         if (!message.buffers.empty()) {
-          auto receivedFds = socket_->popNextReceivedFds().releaseReceived();
-
-          int i = 0;
-          for (auto &fd : receivedFds) {
-            auto memfd =
-                std::make_unique<MemFd>(std::move(fd), message.buffers[i].size);
+          auto receivedFds = socket_->popReceivedFds();
+          for (size_t i = 0; i < receivedFds.size(); ++i) {
+            auto memfd = std::make_unique<MemFd>(receivedFds[i],
+                                                 message.buffers[i].size);
             auto queue = attachQueue(memfd->buf(), memfd->size());
             queues_.push_back(ServerQueue{std::move(memfd), std::move(queue)});
-            i++;
           }
         }
-
         if (message.last) {
           std::vector<Queue *> qlist;
           for (auto &q : queues_) {
@@ -349,53 +325,39 @@ private:
           }
           postEvent([this] { queuesAreReady_ = true; });
         }
-
-        continue;
-      }
-
-      if (type == SERVER_HELLO) {
+      } else if (type == SERVER_HELLO) {
         ServerHelloMessage message;
-
-        if (!message.deserialize(iobuf)) {
+        if (!message.deserialize(msg, msgLen)) {
           break;
         }
-
         postEvent([this, &message] {
           connectionId_ = message.connectionId;
           serverHelloReceived_.first = true;
           serverHelloReceived_.second = message.error;
         });
-
-        continue;
-      }
-
-      if (type == REMOUNT_RESULT) {
+      } else if (type == REMOUNT_RESULT) {
         RemountResultMessage message;
-
-        if (!message.deserialize(iobuf)) {
+        if (!message.deserialize(msg, msgLen)) {
           break;
         }
-
         postEvent([this, &message] {
           remountResult_.first = true;
           remountResult_.second = message.error;
         });
-
-        continue;
+      } else {
+        break;
       }
 
-      break;
+      readBuf_.erase(readBuf_.begin(), readBuf_.begin() + msgLen);
     }
   }
 
-  void readEOF() noexcept override {
+  void onEof() {
     connected_ = false;
     PFSD_CLIENT_LOG("Client disconnected.");
   }
 
-  void readErr(const folly::AsyncSocketException &ex) noexcept override {
-    PFSD_CLIENT_ELOG("Read error: %s", ex.what());
-  }
+  void onError(int err) { PFSD_CLIENT_ELOG("Read error: %d", err); }
 
   template <typename Function> void postEvent(Function func) {
     std::unique_lock lk(cvMutex_);
@@ -413,11 +375,10 @@ private:
     cv_.wait_for(lk, std::chrono::milliseconds(timeoutMs), p);
   }
 
-  char transferBuf_[1024];
-  folly::EventBase evb_;
-  std::unique_ptr<folly::AsyncFdSocket> socket_;
+  pfsutil::EventLoop evb_;
+  std::unique_ptr<pfsutil::UnixSocket> socket_;
   std::string pbdname_;
-  folly::IOBufQueue bufferQueue_;
+  std::vector<uint8_t> readBuf_;
   std::thread eventLoopThread_;
 
   bool error_;

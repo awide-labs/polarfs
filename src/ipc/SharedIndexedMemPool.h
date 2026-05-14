@@ -23,15 +23,20 @@
 #include <assert.h>
 #include <stdint.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <sys/mman.h>
 #include <type_traits>
+#include <unistd.h>
 
-#include <folly/Portability.h>
-#include <folly/concurrency/CacheLocality.h>
-#include <folly/portability/SysMman.h>
-#include <folly/portability/Unistd.h>
-#include <folly/synchronization/AtomicStruct.h>
-
+#include "access_spreader.h"
 #include "memfd.h"
+#include "pfs_align.h"
 
 namespace ipc {
 
@@ -74,13 +79,9 @@ namespace ipc {
 /// constructed, but delays element construction.  This means that only
 /// elements that are actually returned to the caller get paged into the
 /// process's resident set (RSS).
-template <template <typename> class Atom = std::atomic>
 struct SharedIndexedMemPool {
   SharedIndexedMemPool(const SharedIndexedMemPool &) = delete;
   SharedIndexedMemPool &operator=(const SharedIndexedMemPool &) = delete;
-
-  static_assert(std::is_nothrow_default_constructible<Atom<uint32_t>>::value,
-                "Atom must be nothrow default constructible");
 
   // these are public because clients may need to reason about the number
   // of bits required to hold indices from a pool, given its capacity
@@ -108,14 +109,14 @@ struct SharedIndexedMemPool {
     size_t pagesize = size_t(sysconf(_SC_PAGESIZE));
 
     size_t slotsSize = sizeof(Slot) * (actualCapacity_ + 1);
-    slotsSize = folly::align_ceil(slotsSize, pagesize);
+    slotsSize = pfsutil::align_ceil(slotsSize, pagesize);
 
     size_t dataSize = elemSize * (actualCapacity_ + 1);
-    dataSize = folly::align_ceil(dataSize, pagesize);
+    dataSize = pfsutil::align_ceil(dataSize, pagesize);
 
     size_t dynamicDataSize =
         sizeof(DynamicData) + sizeof(LocalList) * numLocalLists_;
-    dynamicDataSize = folly::align_ceil(dynamicDataSize, pagesize);
+    dynamicDataSize = pfsutil::align_ceil(dynamicDataSize, pagesize);
 
     mmapLength_ = slotsSize + dataSize + dynamicDataSize;
     assert((mmapLength_ % pagesize) == 0);
@@ -125,8 +126,8 @@ struct SharedIndexedMemPool {
     data_ = (char *)memfd_->buf() + slotsSize;
 
     for (int i = 0; i < actualCapacity_; i++) {
-      new (&slots_[i].localNext) Atom<uint32_t>;
-      new (&slots_[i].globalNext) Atom<uint32_t>;
+      new (&slots_[i].localNext) std::atomic<uint32_t>;
+      new (&slots_[i].globalNext) std::atomic<uint32_t>;
     }
 
     if (localLstLimit >= 255) {
@@ -248,9 +249,9 @@ struct SharedIndexedMemPool {
 private:
   ///////////// types
 
-  struct Slot : public folly::cacheline_align_t {
-    Atom<uint32_t> localNext;
-    Atom<uint32_t> globalNext;
+  struct Slot : public pfsutil::cacheline_align_t {
+    std::atomic<uint32_t> localNext;
+    std::atomic<uint32_t> globalNext;
 
     Slot() : localNext{}, globalNext{} {}
   };
@@ -289,8 +290,8 @@ private:
     TaggedPtr withEmpty() const { return withIdx(0).withSize(0); }
   };
 
-  struct alignas(folly::hardware_destructive_interference_size) LocalList {
-    folly::AtomicStruct<TaggedPtr, Atom> head;
+  struct alignas(pfsutil::kCachelineSize) LocalList {
+    std::atomic<TaggedPtr> head;
 
     LocalList() : head(TaggedPtr{}) {}
   };
@@ -326,12 +327,12 @@ private:
     /// To allow use of atomic ++ instead of CAS, we let this overflow.
     /// The actual number of constructed elements is min(actualCapacity_,
     /// size_)
-    Atom<uint32_t> size_;
+    std::atomic<uint32_t> size_;
 
     /// this is the head of a list of node chained by globalNext, that are
     /// themselves each the head of a list chained by localNext
-    alignas(folly::hardware_destructive_interference_size)
-        folly::AtomicStruct<TaggedPtr, Atom> globalHead_;
+    alignas(pfsutil::kCachelineSize)
+        std::atomic<TaggedPtr> globalHead_;
 
     /// use AccessSpreader to find your list.  We use stripes instead of
     /// thread-local to avoid the need to grow or shrink on thread start
@@ -366,7 +367,7 @@ private:
   }
 
   // idx references a single node
-  void localPush(folly::AtomicStruct<TaggedPtr, Atom> &head, uint32_t idx) {
+  void localPush(std::atomic<TaggedPtr> &head, uint32_t idx) {
     Slot &s = slot(idx);
     TaggedPtr h = head.load(std::memory_order_acquire);
     while (true) {
@@ -404,7 +405,7 @@ private:
   }
 
   // returns 0 if allocation failed
-  uint32_t localPop(folly::AtomicStruct<TaggedPtr, Atom> &head) {
+  uint32_t localPop(std::atomic<TaggedPtr> &head) {
     while (true) {
       TaggedPtr h = head.load(std::memory_order_acquire);
       if (h.idx != 0) {
@@ -428,12 +429,12 @@ private:
           return 0;
         }
         Slot &s = slot(idx);
-        // Atom is enforced above to be nothrow-default-constructible
+        // std::atomic<uint32_t> is nothrow-default-constructible.
         // As an optimization, use default-initialization (no parens) rather
         // than direct-initialization (with parens): these locations are
         // stored-to before they are loaded-from
-        new (&s.localNext) Atom<uint32_t>;
-        new (&s.globalNext) Atom<uint32_t>;
+        new (&s.localNext) std::atomic<uint32_t>;
+        new (&s.globalNext) std::atomic<uint32_t>;
         return idx;
       }
 
@@ -449,8 +450,8 @@ private:
     }
   }
 
-  folly::AtomicStruct<TaggedPtr, Atom> &localHead() {
-    auto stripe = folly::AccessSpreader<Atom>::current(numLocalLists_);
+  std::atomic<TaggedPtr> &localHead() {
+    auto stripe = pfsutil::AccessSpreader::current(numLocalLists_);
     return dynamicData_->local_[stripe].head;
   }
 

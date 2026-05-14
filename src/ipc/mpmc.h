@@ -25,10 +25,9 @@ SOFTWARE.
 
 #pragma once
 
-#include <folly/synchronization/WaitOptions.h>
-#include <folly/synchronization/detail/Spin.h>
 #include "eventcount.h"
-#include "folly/lang/Align.h"
+#include "pfs_align.h"
+#include "pfs_portability.h"
 #include <atomic>
 #include <cassert>
 #include <cstddef> // offsetof
@@ -48,7 +47,7 @@ SOFTWARE.
 
 namespace rigtorp {
 namespace mpmc {
-static constexpr size_t hardwareInterferenceSize = folly::cacheline_align_v;
+static constexpr size_t hardwareInterferenceSize = pfsutil::kCachelineSize;
 
 #if defined(__cpp_aligned_new)
 template <typename T> using AlignedAllocator = std::allocator<T>;
@@ -181,8 +180,8 @@ public:
 
   static size_t memorySizeForCapacity(size_t capacity) {
     size_t pagesize = size_t(sysconf(_SC_PAGESIZE));
-    return folly::align_ceil(sizeof(Header) + sizeof(Slot<T>) * capacity,
-                             pagesize);
+    return pfsutil::align_ceil(sizeof(Header) + sizeof(Slot<T>) * capacity,
+                           pagesize);
   }
 
   template <typename... Args> void emplace(Args &&...args) noexcept {
@@ -254,8 +253,8 @@ public:
     auto &slot = slots_[idx(tail)];
     while (turn(tail) * 2 + 1 != slot.turn.load(std::memory_order_acquire)) {
       auto const deadline = std::chrono::steady_clock::time_point::max();
-      folly::detail::spin_pause_until(
-          deadline, folly::WaitOptions(), [this, tail, &slot] {
+      pfsutil::spin_pause_until(
+          deadline, pfsutil::kDefaultSpinMax, [this, tail, &slot] {
             return turn(tail) * 2 + 1 ==
                    slot.turn.load(std::memory_order_acquire);
           });

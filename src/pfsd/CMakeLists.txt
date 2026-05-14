@@ -15,8 +15,6 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/src/pfsd/
     ${PROJECT_SOURCE_DIR}/src/pfs_core/
     ${PROJECT_SOURCE_DIR}/src/trace/include/
-    ${PROJECT_BINARY_DIR}/third-party/folly/
-    ${PROJECT_SOURCE_DIR}/third-party/folly/
     ${PROJECT_SOURCE_DIR}/src/
     ${PROJECT_SOURCE_DIR}/
 )
@@ -33,6 +31,9 @@ SET(SRC_LIST_PFSD pfsd_main.cc
                   pfsd_worker.cc
                   ../pfs_core/lib/dclcrwlock.cc
                   ../ipc/server.cc
+                  ../ipc/access_spreader.cc
+                  ../ipc/pfs_event_loop.cc
+                  ../ipc/pfs_unix_socket.cc
     )
 
 # macro definition
@@ -59,8 +60,6 @@ target_link_libraries(pfsdaemon
     -Wl,--no-as-needed
     pfs
     ${PROJECT_BINARY_DIR}/third-party/zlog/lib/libzlog.a
-    glog
-    folly
     pthread
     -Wl,--end-group
 )

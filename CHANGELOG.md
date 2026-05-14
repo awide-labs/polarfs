@@ -8,7 +8,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
+### Removed
+
+- Build-time dependencies on folly, fmt, glog, double-conversion, and
+  fast_float (XCOM-154)
 
 ## [2.1.8] - 2026-05-08
 

@@ -1,12 +1,11 @@
 #pragma once
 
-#include "folly/io/Cursor.h"
-#include "folly/json/json.h"
 #include "ipc/mpmc.h"
+#include "ipc/pfs_align.h"
+#include "ipc/pfs_buf.h"
 #include <cstdint>
-#include <folly/dynamic.h>
-#include <folly/io/async/fdsock/AsyncFdSocket.h>
 #include <semaphore.h>
+#include <vector>
 
 #include <pfsd_proto.h>
 
@@ -33,7 +32,7 @@ struct BufferDesc {
   BufferDesc(uint64_t id, uint64_t size) : id(id), size(size) {}
 };
 
-struct Request : folly::cacheline_align_t {
+struct Request : pfsutil::cacheline_align_t {
   int memBufId;
   off_t offset;
   size_t size;
@@ -104,17 +103,15 @@ static inline std::string makeSockPath(std::string pbdname) {
   return sockPath;
 }
 
-static inline bool readMessageTypeAndLen(const folly::IOBuf *buf, int &type,
-                                         size_t &len) {
-  if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+static inline bool readMessageTypeAndLen(const uint8_t *data, size_t buflen,
+                                         int &type, size_t &len) {
+  constexpr size_t kHdrSize = sizeof(uint32_t) * 2;
+  if (buflen < kHdrSize) {
     return false;
   }
-
-  folly::io::Cursor cursor(buf);
-
-  type = cursor.readLE<uint32_t>();
-  len = cursor.readLE<uint32_t>();
-
+  pfsutil::BufReader r(data, kHdrSize);
+  type = r.readLE<uint32_t>();
+  len = r.readLE<uint32_t>();
   return true;
 }
 
@@ -124,7 +121,7 @@ struct ClientHelloMessage {
   int host_id;
   int flags;
 
-  std::unique_ptr<folly::IOBuf> serialize() const {
+  std::vector<uint8_t> serialize() const {
     const size_t totalSize =
         sizeof(uint32_t) +                  // message type
         sizeof(uint32_t) +                  // total length
@@ -134,8 +131,8 @@ struct ClientHelloMessage {
         sizeof(int32_t) +                   // host_id
         sizeof(int32_t);                    // flags
 
-    auto buf = folly::IOBuf::create(totalSize);
-    folly::io::Appender appender(buf.get(), 0);
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
 
     appender.writeLE<uint32_t>(CLIENT_HELLO);
     appender.writeLE<uint32_t>(totalSize);
@@ -152,15 +149,16 @@ struct ClientHelloMessage {
     appender.writeLE<int32_t>(host_id);
     appender.writeLE<int32_t>(flags);
 
+    buf.resize(appender.bytesWritten());
     return buf;
   }
 
-  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
-    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+  bool deserialize(const uint8_t* data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
       return false;
     }
 
-    folly::io::Cursor cursor(buf.get());
+    pfsutil::BufReader cursor(data, len);
 
     int messageType = cursor.readLE<uint32_t>();
     size_t totalLength = cursor.readLE<uint32_t>();
@@ -169,7 +167,7 @@ struct ClientHelloMessage {
       return false;
     }
 
-    if (buf->computeChainCapacity() < totalLength) {
+    if (len < totalLength) {
       return false;
     }
 
@@ -197,7 +195,7 @@ struct RemountMessage {
   int host_id;
   int flags;
 
-  std::unique_ptr<folly::IOBuf> serialize() const {
+  std::vector<uint8_t> serialize() const {
     const size_t totalSize =
         sizeof(uint32_t) +                  // message type
         sizeof(uint32_t) +                  // total length
@@ -207,8 +205,8 @@ struct RemountMessage {
         sizeof(int32_t) +                   // host_id
         sizeof(int32_t);                    // flags
 
-    auto buf = folly::IOBuf::create(totalSize);
-    folly::io::Appender appender(buf.get(), 0);
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
 
     appender.writeLE<uint32_t>(REMOUNT);
     appender.writeLE<uint32_t>(totalSize);
@@ -225,15 +223,16 @@ struct RemountMessage {
     appender.writeLE<int32_t>(host_id);
     appender.writeLE<int32_t>(flags);
 
+    buf.resize(appender.bytesWritten());
     return buf;
   }
 
-  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
-    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+  bool deserialize(const uint8_t* data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
       return false;
     }
 
-    folly::io::Cursor cursor(buf.get());
+    pfsutil::BufReader cursor(data, len);
 
     int messageType = cursor.readLE<uint32_t>();
     size_t totalLength = cursor.readLE<uint32_t>();
@@ -242,7 +241,7 @@ struct RemountMessage {
       return false;
     }
 
-    if (buf->computeChainCapacity() < totalLength) {
+    if (len < totalLength) {
       return false;
     }
 
@@ -268,7 +267,7 @@ struct RegisterQueuesMessage {
   std::vector<BufferDesc> buffers;
   bool last{false};
 
-  std::unique_ptr<folly::IOBuf> serialize() {
+  std::vector<uint8_t> serialize() {
     const size_t totalSize =
         sizeof(uint32_t) +                                      // message type
         sizeof(uint32_t) +                                      // total length
@@ -276,8 +275,8 @@ struct RegisterQueuesMessage {
         sizeof(uint32_t) +                                      // last
         (sizeof(uint64_t) + sizeof(uint64_t)) * buffers.size(); // buffers
 
-    auto buf = folly::IOBuf::create(totalSize);
-    folly::io::Appender appender(buf.get(), 0);
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
 
     appender.writeLE<uint32_t>(REGISTER_QUEUES);
     appender.writeLE<uint32_t>(totalSize);
@@ -289,15 +288,16 @@ struct RegisterQueuesMessage {
       appender.writeLE<uint64_t>(buffer.size);
     }
 
+    buf.resize(appender.bytesWritten());
     return buf;
   }
 
-  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
-    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+  bool deserialize(const uint8_t* data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
       return false;
     }
 
-    folly::io::Cursor cursor(buf.get());
+    pfsutil::BufReader cursor(data, len);
 
     int messageType = cursor.readLE<uint32_t>();
     size_t totalLength = cursor.readLE<uint32_t>();
@@ -306,7 +306,7 @@ struct RegisterQueuesMessage {
       return false;
     }
 
-    if (buf->computeChainCapacity() < totalLength) {
+    if (len < totalLength) {
       return false;
     }
 
@@ -316,7 +316,7 @@ struct RegisterQueuesMessage {
     }
     last = cursor.readLE<uint32_t>();
 
-    while (cursor.getCurrentPosition() < totalLength) {
+    while (cursor.position() < totalLength) {
       uint64_t id = cursor.readLE<uint64_t>();
       uint64_t size = cursor.readLE<uint64_t>();
       buffers.emplace_back(id, size);
@@ -330,7 +330,7 @@ struct RegisterBuffersMessage {
   std::vector<BufferDesc> buffers;
   bool last{false};
 
-  std::unique_ptr<folly::IOBuf> serialize() {
+  std::vector<uint8_t> serialize() {
     const size_t totalSize =
         sizeof(uint32_t) +                                      // message type
         sizeof(uint32_t) +                                      // total length
@@ -338,8 +338,8 @@ struct RegisterBuffersMessage {
         sizeof(uint32_t) +                                      // last
         (sizeof(uint64_t) + sizeof(uint64_t)) * buffers.size(); // buffers
 
-    auto buf = folly::IOBuf::create(totalSize);
-    folly::io::Appender appender(buf.get(), 0);
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
 
     appender.writeLE<uint32_t>(REGISTER_BUFFERS);
     appender.writeLE<uint32_t>(totalSize);
@@ -351,15 +351,16 @@ struct RegisterBuffersMessage {
       appender.writeLE<uint64_t>(buffer.size);
     }
 
+    buf.resize(appender.bytesWritten());
     return buf;
   }
 
-  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
-    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+  bool deserialize(const uint8_t* data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
       return false;
     }
 
-    folly::io::Cursor cursor(buf.get());
+    pfsutil::BufReader cursor(data, len);
 
     int messageType = cursor.readLE<uint32_t>();
     size_t totalLength = cursor.readLE<uint32_t>();
@@ -368,7 +369,7 @@ struct RegisterBuffersMessage {
       return false;
     }
 
-    if (buf->computeChainCapacity() < totalLength) {
+    if (len < totalLength) {
       return false;
     }
 
@@ -378,7 +379,7 @@ struct RegisterBuffersMessage {
     }
     last = cursor.readLE<uint32_t>();
 
-    while (cursor.getCurrentPosition() < totalLength) {
+    while (cursor.position() < totalLength) {
       uint64_t id = cursor.readLE<uint64_t>();
       uint64_t size = cursor.readLE<uint64_t>();
       buffers.emplace_back(id, size);
@@ -389,28 +390,28 @@ struct RegisterBuffersMessage {
 };
 
 struct AckMessage {
-  std::unique_ptr<folly::IOBuf> serialize() {
+  std::vector<uint8_t> serialize() {
     const size_t totalSize = sizeof(uint32_t) + // message type
                              sizeof(uint32_t);  // total length
-    auto buf = folly::IOBuf::create(totalSize);
-    buf->append(totalSize);
-    folly::io::RWPrivateCursor cursor(buf.get());
-    cursor.writeLE<uint32_t>(ACK);
-    cursor.writeLE<uint32_t>(totalSize);
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
+    appender.writeLE<uint32_t>(ACK);
+    appender.writeLE<uint32_t>(totalSize);
+    buf.resize(appender.bytesWritten());
     return buf;
   }
 
-  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
-    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+  bool deserialize(const uint8_t* data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
       return false;
     }
 
-    folly::io::Cursor cursor(buf.get());
+    pfsutil::BufReader cursor(data, len);
 
     int type = cursor.readLE<uint32_t>();
-    size_t len = cursor.readLE<uint32_t>();
+    size_t totalLength = cursor.readLE<uint32_t>();
 
-    if (buf->computeChainCapacity() < len) {
+    if (len < totalLength) {
       return false;
     }
 
@@ -422,15 +423,15 @@ struct ServerHelloMessage {
   uint64_t connectionId;
   int error;
 
-  std::unique_ptr<folly::IOBuf> serialize() {
+  std::vector<uint8_t> serialize() {
     const size_t totalSize = sizeof(uint32_t) + // message type
                              sizeof(uint32_t) + // total length
                              sizeof(uint32_t) + // version
                              sizeof(uint64_t) + // connectionId
                              sizeof(int32_t);   // error
 
-    auto buf = folly::IOBuf::create(totalSize);
-    folly::io::Appender appender(buf.get(), 0);
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
 
     appender.writeLE<uint32_t>(SERVER_HELLO);
     appender.writeLE<uint32_t>(totalSize);
@@ -439,22 +440,21 @@ struct ServerHelloMessage {
     appender.writeLE<uint64_t>(connectionId);
     appender.writeLE<int32_t>(error);
 
+    buf.resize(appender.bytesWritten());
     return buf;
   }
 
-  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
-    using dynamic = folly::dynamic;
-
-    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+  bool deserialize(const uint8_t* data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
       return false;
     }
 
-    folly::io::Cursor cursor(buf.get());
+    pfsutil::BufReader cursor(data, len);
 
     int type = cursor.readLE<uint32_t>();
-    size_t len = cursor.readLE<uint32_t>();
+    size_t totalLength = cursor.readLE<uint32_t>();
 
-    if (buf->computeChainCapacity() < len) {
+    if (len < totalLength) {
       return false;
     }
 
@@ -477,14 +477,14 @@ struct ServerHelloMessage {
 struct RemountResultMessage {
   int error;
 
-  std::unique_ptr<folly::IOBuf> serialize() {
+  std::vector<uint8_t> serialize() {
     const size_t totalSize = sizeof(uint32_t) + // message type
                              sizeof(uint32_t) + // total length
                              sizeof(uint32_t) + // version
                              sizeof(int32_t);   // error
 
-    auto buf = folly::IOBuf::create(totalSize);
-    folly::io::Appender appender(buf.get(), 0);
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
 
     appender.writeLE<uint32_t>(REMOUNT_RESULT);
     appender.writeLE<uint32_t>(totalSize);
@@ -492,22 +492,21 @@ struct RemountResultMessage {
 
     appender.writeLE<int32_t>(error);
 
+    buf.resize(appender.bytesWritten());
     return buf;
   }
 
-  bool deserialize(std::unique_ptr<folly::IOBuf> &buf) {
-    using dynamic = folly::dynamic;
-
-    if (buf->computeChainDataLength() < sizeof(uint32_t) * 2) {
+  bool deserialize(const uint8_t* data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
       return false;
     }
 
-    folly::io::Cursor cursor(buf.get());
+    pfsutil::BufReader cursor(data, len);
 
     int type = cursor.readLE<uint32_t>();
-    size_t len = cursor.readLE<uint32_t>();
+    size_t totalLength = cursor.readLE<uint32_t>();
 
-    if (buf->computeChainCapacity() < len) {
+    if (len < totalLength) {
       return false;
     }
 

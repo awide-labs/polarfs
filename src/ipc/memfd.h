@@ -1,9 +1,10 @@
 #pragma once
 
-#include <folly/File.h>
-#include <folly/FileUtil.h>
-#include <folly/system/MemoryMapping.h>
+#include <cerrno>
+#include <string>
 #include <sys/mman.h>
+#include <system_error>
+#include <unistd.h>
 
 namespace ipc {
 
@@ -12,36 +13,51 @@ public:
   MemFd(const MemFd &) = delete;
   MemFd &operator=(const MemFd &) = delete;
 
-  MemFd(const std::string &name, size_t size) {
-    size_ = size;
-    name_ = name;
-
-    folly::File file(memfd_create(name_.c_str(), MFD_ALLOW_SEALING), true);
-
-    if (folly::ftruncateNoInt(file.fd(), size_) != 0) {
-      throw std::bad_alloc();
+  // Creates a new sealable memfd-backed shared mapping of `size` bytes.
+  MemFd(const std::string &name, size_t size) : size_(size), name_(name) {
+    int fd = ::memfd_create(name_.c_str(), MFD_ALLOW_SEALING);
+    if (fd < 0) {
+      throw std::system_error(errno, std::generic_category(), "memfd_create");
     }
-
-    mapping_ = std::make_unique<folly::MemoryMapping>(
-        std::move(file), 0, size_, folly::MemoryMapping::writable());
+    if (::ftruncate(fd, static_cast<off_t>(size_)) != 0) {
+      int e = errno;
+      ::close(fd);
+      throw std::system_error(e, std::generic_category(), "ftruncate");
+    }
+    fd_ = fd;
+    map();
   }
 
-  MemFd(folly::File file, size_t size) {
-    size_ = size;
+  // Adopts ownership of `fd` (must already be sized to `size`).
+  MemFd(int fd, size_t size) : size_(size), fd_(fd) { map(); }
 
-    mapping_ = std::make_unique<folly::MemoryMapping>(
-        std::move(file), 0, size_, folly::MemoryMapping::writable());
+  ~MemFd() {
+    if (buf_ != nullptr && buf_ != MAP_FAILED) {
+      ::munmap(buf_, size_);
+    }
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
   }
 
-  void *buf() const { return mapping_->asWritableRange<char>().data(); }
-
-  int fd() const { return mapping_->fd(); }
-
+  void *buf() const { return buf_; }
+  int fd() const { return fd_; }
   size_t size() const { return size_; }
 
 private:
+  void map() {
+    buf_ = ::mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+    if (buf_ == MAP_FAILED) {
+      int e = errno;
+      ::close(fd_);
+      fd_ = -1;
+      throw std::system_error(e, std::generic_category(), "mmap");
+    }
+  }
+
   size_t size_{};
-  std::unique_ptr<folly::MemoryMapping> mapping_{};
+  int fd_{-1};
+  void *buf_{nullptr};
   std::string name_{};
 };
 

@@ -6,13 +6,14 @@
 
 #pragma once
 
-#include <folly/concurrency/CacheLocality.h>
+#include "../ipc/access_spreader.h"
+#include "../ipc/pfs_align.h"
 #include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <optional>
 
-template <typename Result> class WorkGroup : folly::cacheline_align_t {
+template <typename Result> class WorkGroup : pfsutil::cacheline_align_t {
     public:
 	std::optional<Result>
 	wait_or_run(std::function<std::optional<Result>()> fn, bool &wait)
@@ -69,7 +70,7 @@ template <typename Result> class GroupedWorkRunner {
 
 	std::optional<Result> run(std::function<std::optional<Result>()> fn)
 	{
-		auto idx = folly::AccessSpreader<>::current(groups_.size());
+		auto idx = pfsutil::AccessSpreader::current(groups_.size());
 		bool wait;
 		auto result = groups_[idx].wait_or_run(fn, wait);
 		if (!wait) {

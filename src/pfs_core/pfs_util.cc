@@ -28,12 +28,15 @@
 #include "pfs_memory.h"
 #include "pfs_trace.h"
 
-#include <folly/hash/Checksum.h>
+#include <fastcrc32/crc32c.h>
 
 uint32_t
 crc32c(uint32_t crc, const void *buf, size_t size)
 {
-  return folly::crc32c(static_cast<const unsigned char *>(buf), size, crc);
+  // folly::crc32c treats `crc` as the raw running residual and returns the
+  // raw residual; corsix/fast-crc32 inverts at entry and exit. Bridge the
+  // conventions so on-disk checksums remain bit-compatible with prior builds.
+  return ~fastcrc32::crc32c(~crc, buf, size);
 }
 
 uint64_t

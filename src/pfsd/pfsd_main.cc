@@ -96,7 +96,7 @@ int main(int ac, char *av[])
 	pbdname = g_option.o_pbdname;
 	err = pfsd_write_pid(pbdname);
 	if (err != 0) {
-		fprintf(stderr, "pfsd %s may already running, err %d.\n", 
+		fprintf(stderr, "pfsd %s may already running, err %d.\n",
 		    pbdname, err);
 		return -1;
 	}
@@ -142,7 +142,7 @@ int main(int ac, char *av[])
 
 	std::vector<std::unique_ptr<ipc::Queue> > queues;
 	std::vector<ipc::Queue *> queue_pointers;
-	folly::EventBase evb;
+	pfsutil::EventLoop evb;
 	auto server = std::make_unique<ipc::Server>(evb, pbdname);
 
 	g_nworkers = g_option.o_workers;

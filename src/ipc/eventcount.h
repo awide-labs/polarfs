@@ -22,10 +22,10 @@
 
 #pragma once
 
-#include "folly/Likely.h"
-#include "folly/Portability.h"
+#include "pfs_portability.h"
 #include <asm/unistd_64.h>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cerrno>
 #include <climits>
@@ -184,7 +184,8 @@ private:
   static_assert(sizeof(uint64_t) == 8, "bad platform");
   static_assert(sizeof(std::atomic<uint64_t>) == 8, "bad platform");
 
-  static constexpr size_t kEpochOffset = folly::kIsLittleEndian ? 1 : 0;
+  static constexpr size_t kEpochOffset =
+      std::endian::native == std::endian::little ? 1 : 0;
 
   // val_ stores the epoch in the most significant 32 bits and the
   // waiter count in the least significant 32 bits.
@@ -203,7 +204,7 @@ inline void EventCount::notifyAll() noexcept { doNotify(INT_MAX); }
 
 inline void EventCount::doNotify(int n) noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_acq_rel);
-  if (FOLLY_UNLIKELY(prev & kWaiterMask)) {
+  if (unlikely(prev & kWaiterMask)) {
     futexWake(reinterpret_cast<uint32_t *>(&val_) + kEpochOffset, n, -1);
   }
 }

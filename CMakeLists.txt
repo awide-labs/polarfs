@@ -191,10 +191,8 @@ execute_process(COMMAND mkdir -p ${PROJECT_SOURCE_DIR}/include)
 execute_process(COMMAND cp ${PROJECT_SOURCE_DIR}/src/pfs_sdk/pfsd_sdk.h ${PROJECT_SOURCE_DIR}/include/)
 execute_process(COMMAND cp ${PROJECT_SOURCE_DIR}/src/pfs_core/pfs_api.h ${PROJECT_SOURCE_DIR}/include/)
 
-add_definitions(-DGLOG_USE_GLOG_EXPORT)
-
 include(${CMAKE_SOURCE_DIR}/cmake/deps.cmake)
 
-add_subdirectory(third-party/folly)
+add_subdirectory(third-party/fast-crc32)
 add_subdirectory(third-party/zlog)
 add_subdirectory(src)
