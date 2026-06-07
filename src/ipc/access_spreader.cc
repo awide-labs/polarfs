@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
+#include <tuple>
 #include <sys/types.h>
 #include <unistd.h>
 
