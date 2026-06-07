@@ -118,6 +118,12 @@ if ! bash "$(dirname "$0")/pfsd-ebusy-test.sh"; then
     TEST_FAILED=1
 fi
 
+echo "Running pfsd_disconnect_test..."
+if ! ./bin/pfsd_disconnect_test "disk" "$TEST_LOOP_DEVICE_NAME" 19; then
+    echo "ERROR: pfsd_disconnect_test failed"
+    TEST_FAILED=1
+fi
+
 if [[ $TEST_FAILED -ne 0 ]]; then
     echo "=== ONE OR MORE TESTS FAILED ==="
     exit 1

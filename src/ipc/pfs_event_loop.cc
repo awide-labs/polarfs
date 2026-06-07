@@ -161,6 +161,10 @@ void EventLoop::runInLoop(std::function<void()> fn) {
     fn();
     return;
   }
+  queueInLoop(std::move(fn));
+}
+
+void EventLoop::queueInLoop(std::function<void()> fn) {
   {
     std::lock_guard lk(queueMu_);
     pending_.push_back(std::move(fn));

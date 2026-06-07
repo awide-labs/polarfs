@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -73,10 +74,10 @@ public:
   void setPbdname(std::string pbdname) { pbdname_ = pbdname; }
 
   bool start(std::string cluster, int host_id, int flags, int timeoutMs) {
-    eventLoopThread_ = std::thread([this] {
+    eventLoopThread_ = std::thread([this, timeoutMs] {
       try {
         std::string sockPath = makeSockPath(pbdname_);
-        int fd = pfsutil::connectUnix(sockPath, 1000);
+        int fd = pfsutil::connectUnix(sockPath, timeoutMs);
         socket_ = std::make_unique<pfsutil::UnixSocket>(&evb_, fd);
         socket_->setReadCallback(
             [this](const uint8_t *data, size_t len) { onBytes(data, len); },
@@ -357,7 +358,9 @@ private:
     PFSD_CLIENT_LOG("Client disconnected.");
   }
 
-  void onError(int err) { PFSD_CLIENT_ELOG("Read error: %d", err); }
+  void onError(int err) {
+    PFSD_CLIENT_ELOG("Socket error: %d (%s)", err, strerror(err));
+  }
 
   template <typename Function> void postEvent(Function func) {
     std::unique_lock lk(cvMutex_);

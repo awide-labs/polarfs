@@ -37,6 +37,15 @@ target_link_libraries(pfsd_filetest
     gtest
 )
 
+add_executable(pfsd_disconnect_test
+    pfsd_disconnect_test.cc
+)
+
+target_link_libraries(pfsd_disconnect_test
+    pfsd
+    gtest
+)
+
 add_executable(pfsd_cachetest
     dcache_test_rw_ro_sync.cc
 )

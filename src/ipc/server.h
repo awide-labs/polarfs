@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <shared_mutex>
 #include <sys/un.h>
@@ -153,7 +154,7 @@ public:
   }
 
   void cleanupClient(uint64_t clientId) {
-    evb_.runInLoop([this, clientId] {
+    evb_.queueInLoop([this, clientId] {
       {
         std::lock_guard lk(rwLock_);
         bufferTable_.eraseBuffers(clientId);
@@ -302,15 +303,22 @@ private:
     }
   }
 
-  void onEof() {
-    pfsd_info("Client disconnected");
+  void teardown() {
     if (host_id_ >= 0) {
       pfs_mount_release(pbdname_.c_str(), host_id_);
     }
     server_->cleanupClient(clientId_);
   }
 
-  void onError(int err) { pfsd_error("Read error: %d", err); }
+  void onEof() {
+    pfsd_info("Client disconnected");
+    teardown();
+  }
+
+  void onError(int err) {
+    pfsd_error("Socket error: %d (%s)", err, strerror(err));
+    teardown();
+  }
 
   std::unique_ptr<pfsutil::UnixSocket> socket_;
   std::vector<uint8_t> readBuf_;

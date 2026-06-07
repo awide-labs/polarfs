@@ -50,6 +50,12 @@ public:
   // Same, but blocks until fn() returns. Must NOT be called from the loop
   // thread (would deadlock); inline-runs in that case as a courtesy.
   void runInLoopAndWait(std::function<void()> fn);
+  // Enqueue fn to run at the top of a future loop iteration. Unlike
+  // runInLoop, NEVER runs inline -- even on the loop thread -- so it is safe
+  // for deferring work that must not execute within the current callback
+  // frame (e.g. destroying the object whose callback is on the stack).
+  // Thread-safe.
+  void queueInLoop(std::function<void()> fn);
 
   bool inLoopThread() const noexcept;
 

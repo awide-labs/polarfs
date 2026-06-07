@@ -8,6 +8,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- After a client crashed or was killed mid-handshake, pfsdaemon could keep
+  that host id reserved even though no client was connected. Remounting the
+  same host id then failed with "Repeat rw/ro mount with same hostid" until
+  the daemon was restarted (XCOM-158)
+
 ## [2.1.9] - 2026-05-14
 
 ### Removed
