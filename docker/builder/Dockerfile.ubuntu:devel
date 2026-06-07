@@ -12,12 +12,7 @@ RUN apt-get update && \
         python3 \
         ruby-dev \
         libaio-dev \
-        libboost-all-dev \
-        libdouble-conversion-dev \
-        libfast-float-dev \
-        libfmt-dev \
         libfuse-dev \
-        libgoogle-glog-dev \
         libgtest-dev \
         libssl-dev && \
     gem install fpm && \

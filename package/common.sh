@@ -28,16 +28,8 @@ build_package() {
 
     fpm -s dir -t "$package_type" -n polarfs -v "$version" --iteration "$release" \
         --log info \
-        -d boost-context \
-        -d boost-filesystem \
-        -d boost-regex \
-        -d double-conversion \
-        -d fmt \
-        -d gflags \
         -d glibc \
-        -d glog \
         -d libaio \
-        -d libevent \
         -d libgcc \
         -d libicu \
         -d libstdc++ \
