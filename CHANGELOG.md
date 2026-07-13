@@ -28,6 +28,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   (XCOM-27)
 
 - Fix memory leak in pfsd_mount()/pfsd_umount() pair. (TTDB-1801)
+- Fix memory leak and unreleased mutex on the `pfsd_sdk_init()` error
+  paths after `pfs_mount_prepare()`. These fire when no daemon is
+  running, e.g. the pfsd-less `pfs` tool mount that falls back to a
+  local mount. (XCOM-179)
 - Fix signed overflow in local_file_lseek() (mark as intended) (TTDB-1801)
 - Make the `pfsadm` utility fully compatible with Python 3 (XCOM-177)
 

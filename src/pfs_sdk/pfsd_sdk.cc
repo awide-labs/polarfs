@@ -266,7 +266,7 @@ pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
 			if (!client->registerMemPool(std::move(mempool),
 						     false)) {
 				client->shutdown();
-				return -1;
+				goto failed;
 			}
 		}
 	}
@@ -278,13 +278,13 @@ pfsd_sdk_init(int mode, const char *svraddr, int timeout_ms,
 		mempool->zeroInit();
 		if (!client->registerMemPool(std::move(mempool), true)) {
 			client->shutdown();
-			return -1;
+			goto failed;
 		}
 	}
 
   if (!client->start(cluster, host_id, flags, timeout_ms)) {
 	  client->shutdown();
-	  return -1;
+	  goto failed;
   }
 
 	strncpy(s_pbdname, pbdname, sizeof(s_pbdname));
