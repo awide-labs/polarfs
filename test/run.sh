@@ -78,6 +78,12 @@ echo ""
 echo "Formatting..."
 ./bin/pfs -C disk mkfs -f "$TEST_LOOP_DEVICE_NAME"
 
+# Seed the pfsadm read-test file now; pfs write is mount-exclusive.
+echo "Seeding file for pfsadm read test..."
+export PFSADM_READ_REF="/tmp/pfsadm_read_ref.bin"
+head -c 1024 /dev/urandom > "$PFSADM_READ_REF"
+./bin/pfs -C disk write "/$TEST_LOOP_DEVICE_NAME/pfsadm_read_test.bin" < "$PFSADM_READ_REF"
+
 # 2. Start daemon
 echo "Starting PFSD..."
 /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p "$TEST_LOOP_DEVICE_NAME"
@@ -138,6 +144,12 @@ fi
 echo "Running pfsd_proto_test..."
 if ! ./bin/pfsd_proto_test; then
     echo "ERROR: pfsd_proto_test failed"
+    TEST_FAILED=1
+fi
+
+echo "Running pfsadm regression tests..."
+if ! bash test/pfsadm-test.sh; then
+    echo "ERROR: pfsadm regression tests failed"
     TEST_FAILED=1
 fi
 
