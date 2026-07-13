@@ -101,6 +101,28 @@ create_fake_mount(void)
 static void
 destroy_fake_mount(pfs_mount_t *m)
 {
+	// See: pfs_destroy_mount
+	pfs_inode_t *in = (pfs_inode_t *)pfs_avl_first(&mnt->mnt_inodetree);
+	while (in != NULL) {
+		pfs_inode_t *tmp = in;
+		in = (pfs_inode_t *)pfs_avl_next(&mnt->mnt_inodetree, in);
+		pfs_avl_remove(&mnt->mnt_inodetree, tmp);
+		// FIXME
+		// Dir-index maintain the reference across inodes in the form
+		// of pfs_dxent_t->e_in (see 77ddaef8 for details).
+		// In PFSD, however, destroy-mount should clean up all inodes
+		// left in inodelist LRU set. Throughout this process, we may
+		// destroy child inode before its parent due to the random
+		// order of avl traversal, leaving reference ('e_in') of parent
+		// inode a dangling pointer and crash.
+		// We hotfix this by calling a simlilar inode-destroy function.
+		// The only difference is that it won't follow the reference
+		// of inode.
+		pfs_inode_destroy_self(tmp);
+	}
+	pfs_avl_destroy(&mnt->mnt_inodetree);
+
+	m->mnt_inodetree_rwlock->destroy();
 	delete m->mnt_inodetree_rwlock;
 	free(m->mnt_inodelist);
 	free(m);
