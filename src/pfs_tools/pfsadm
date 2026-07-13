@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # Copyright (c) 2017-2021, Alibaba Group Holding Limited
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -225,7 +225,7 @@ class AdminTrace(AdminOperation):
 
     def __init__(self, args):
         super(AdminTrace, self).__init__(ADM_TRACE, args.reqop, args.pbdname,
-            args.filepath, args.line, 0, args.enable)
+            bytes(args.filepath, 'ascii'), args.line, 0, args.enable)
 
 class AdminConfig(AdminOperation):
     """request format is as follows
@@ -251,7 +251,7 @@ class AdminConfig(AdminOperation):
 
     def __init__(self, args):
         super(AdminConfig, self).__init__(ADM_OPTION, args.reqop, args.pbdname,
-            args.name, args.value)
+            bytes(args.name, 'ascii'), args.value)
 
 class AdminRead(AdminOperation):
     """request format is as follows
@@ -272,7 +272,13 @@ class AdminRead(AdminOperation):
     def __init__(self, args):
         pbdname = args.filepath.split('/')[1]
         super(AdminRead, self).__init__(ADM_COMMAND, CMD_READ, pbdname,
-            args.filepath, args.offset, args.length)
+            bytes(args.filepath, 'ascii'), args.offset, args.length)
+
+    def handle_reply_payload(self, payload):
+        # The read command returns raw file content which may be binary,
+        # so write it directly to the binary stdout buffer.
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
 
 class AdminDu(AdminOperation):
     """request format is as follows
@@ -768,7 +774,8 @@ class AdminNameCacheStat(AdminOperation):
 
 def main():
     parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(title='subcommands', dest='cmdname')
+    subparsers = parser.add_subparsers(title='subcommands', dest='cmdname',
+        required=True)
     AdminTrace.register_options(subparsers)
     AdminConfig.register_options(subparsers)
     AdminRead.register_options(subparsers)
