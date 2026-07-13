@@ -1264,17 +1264,20 @@ pfsd_fstat(int fd, struct stat *st)
 static off_t
 local_file_lseek(pfsd_file_t *file, off_t offset, int whence)
 {
-	off_t old_offset, new_offset;
+	off_t old_offset = file->f_offset;
+	off_t new_offset;
 
 	switch (whence) {
 		case SEEK_SET:
-			old_offset = file->f_offset;
 			new_offset = offset;
-			goto check_file_offset;
+			break;
 
 		case SEEK_CUR:
-			old_offset = file->f_offset;
-			new_offset = old_offset + offset;
+			/* This built-in is fully supported in GCC & Clang */
+			if (__builtin_add_overflow(old_offset, offset, &new_offset)) {
+				errno = EOVERFLOW;
+				return (off_t)-1;
+			}
 			break;
 
 		case SEEK_END:
@@ -1286,22 +1289,6 @@ local_file_lseek(pfsd_file_t *file, off_t offset, int whence)
 			return off_t(-1);
 	}
 
-	if (offset > 0 && new_offset < old_offset) {
-		errno = EOVERFLOW;
-		return off_t(-1);
-	}
-
-	/*
-	 * when offset < 0 with SEEK_END, f_offset is less than filesize,
-	 * new_offset maybe bigger than f_offset. So we compare new_offset and
-	 * file size.
-	 */
-	if (offset < 0 && new_offset > old_offset) {
-		errno = EOVERFLOW;
-		return off_t(-1);
-	}
-
-check_file_offset:
 	if (new_offset < 0) {
 		errno = EINVAL;
 		return off_t(-1);

@@ -11,6 +11,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Fix memory leak in pfsd_mount()/pfsd_umount() pair. (TTDB-1801)
+- Fix signed overflow in local_file_lseek() (mark as intended) (TTDB-1801)
 
 ## [2.1.10] - 2026-06-07
 
