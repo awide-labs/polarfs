@@ -18,6 +18,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fixed mountstat file-type classification, which hardcoded the data
+  directory component as `data` and so classified every file as `others`.
+  Also extended the coverage to the remaining subdirectories that previously
+  fell through to `others`: `pg_tblspc` (`tablespace`), `pg_twophase`
+  (`twophase`), `pg_commit_ts` (`commit_ts`), `pg_multixact` (`multixact`),
+  `pg_csnlog` (`csnlog`), `pg_replslot` (`replslot`), and `pg_bulkload`
+  (`bulkload`); these also work as `pfsadm mountstat -f/-s` filter values
+  (XCOM-27)
+
 - Fix memory leak in pfsd_mount()/pfsd_umount() pair. (TTDB-1801)
 - Fix signed overflow in local_file_lseek() (mark as intended) (TTDB-1801)
 

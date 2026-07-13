@@ -143,6 +143,13 @@ const char* pfs_file_type_name[FILE_TYPE_COUNT] = {
     "redo_log",
     "log_index",
     "full_page",
+    "tablespace",
+    "twophase",
+    "commit_ts",
+    "multixact",
+    "csnlog",
+    "replslot",
+    "bulkload",
     "write_back",
     "swap_out",
 
@@ -157,34 +164,65 @@ pfs_get_file_type(const char* file_path)
 {
 	int type = FILE_OTHERS;
 	size_t len = 0;
-	const char *file_name = strchr(file_path, '/');
-	if (file_name != file_path)
-		return type;
-	while(*(++file_name) == '/');
-	--file_name;
+	const char *sub;
 
-	len = strlen(file_name);
-	if (HEAD_MATCH(file_name, len, "/data/base/")) {
+	if (file_path == NULL || *file_path != '/')
+		return type;
+
+	/* Skip leading slashes to reach the data directory component. */
+	sub = file_path;
+	while (*sub == '/')
+		++sub;
+
+	/*
+	 * ni_path has the pbd (volume) name stripped, so it looks like
+	 * "/<datadir>/base/...". Skip whatever the first
+	 * component is named and match on the well-known PostgreSQL
+	 * sub-directories that follow it.
+	 */
+	sub = strchr(sub, '/');
+	if (sub == NULL)
+		return type;
+	/* Collapse any repeated slashes so sub points at a single '/'. */
+	while (sub[1] == '/')
+		++sub;
+
+	len = strlen(sub);
+	if (HEAD_MATCH(sub, len, "/base/")) {
 		type = FILE_USER_SPACE;
-		if (TAIL_MATCH(file_name, len, "_vm"))
+		if (TAIL_MATCH(sub, len, "_vm"))
 			type = FILE_USER_SPACE_VM;
-		else if (TAIL_MATCH(file_name, len, "_fsm"))
+		else if (TAIL_MATCH(sub, len, "_fsm"))
 			type = FILE_USER_SPACE_FSM;
 		return type;
-	} else if (HEAD_MATCH(file_name, len, "/data/global/"))
+	} else if (HEAD_MATCH(sub, len, "/global/"))
 		return FILE_SYSTEM_SPACE;
-	else if (HEAD_MATCH(file_name, len, "/data/pg_wal/")) {
+	else if (HEAD_MATCH(sub, len, "/pg_wal/")) {
 		type = FILE_REDO_LOG;
-		if (HEAD_MATCH(file_name, len, "/data/pg_wal/archive_status"))
+		if (HEAD_MATCH(sub, len, "/pg_wal/archive_status"))
 			type = FILE_OTHERS;
 		return type;
 	}
-	else if (HEAD_MATCH(file_name, len, "/data/pg_xact/"))
+	else if (HEAD_MATCH(sub, len, "/pg_xact/"))
 		return FILE_CLOG;
-	else if (HEAD_MATCH(file_name, len, "/data/pg_logindex/"))
+	else if (HEAD_MATCH(sub, len, "/pg_logindex/"))
 		return FILE_LOG_INDEX;
-	else if (HEAD_MATCH(file_name, len, "/data/polar_fullpage/"))
+	else if (HEAD_MATCH(sub, len, "/polar_fullpage/"))
 		return FILE_FULL_PAGE;
+	else if (HEAD_MATCH(sub, len, "/pg_tblspc/"))
+		return FILE_TABLESPACE;
+	else if (HEAD_MATCH(sub, len, "/pg_twophase/"))
+		return FILE_TWOPHASE;
+	else if (HEAD_MATCH(sub, len, "/pg_commit_ts/"))
+		return FILE_COMMIT_TS;
+	else if (HEAD_MATCH(sub, len, "/pg_multixact/"))
+		return FILE_MULTIXACT;
+	else if (HEAD_MATCH(sub, len, "/pg_csnlog/"))
+		return FILE_CSNLOG;
+	else if (HEAD_MATCH(sub, len, "/pg_replslot/"))
+		return FILE_REPLSLOT;
+	else if (HEAD_MATCH(sub, len, "/pg_bulkload/"))
+		return FILE_BULKLOAD;
 	return  type;
 }
 
