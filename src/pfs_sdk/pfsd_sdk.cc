@@ -349,6 +349,8 @@ pfsd_umount_force(const char *pbdname)
 		PFSD_CLIENT_ELOG("umount failed for %s", pbdname);
 	}
 
+	pfsd_sdk_file_destroy();
+
 	return 0;
 }
 
@@ -374,6 +376,8 @@ pfsd_umount(const char *pbdname)
 		PFSD_CLIENT_ELOG("umount failed for %s", pbdname);
 		return -1;
 	}
+
+	pfsd_sdk_file_destroy();
 
 	return 0;
 }
