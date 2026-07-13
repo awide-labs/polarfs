@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +66,19 @@ struct SharedMemoryPools {
     rawBuffers_.push_back(std::move(buf));
     rawBufferIds_.push_back(id);
     return id;
+  }
+
+  /* Drop a previously registered raw buffer, releasing its MemFd (and the
+   * client's dup'd fd). Returns true if the id was found. */
+  bool removeRawBuffer(uint64_t id) {
+    for (size_t i = 0; i < rawBufferIds_.size(); i++) {
+      if (rawBufferIds_[i] == id) {
+        rawBuffers_.erase(rawBuffers_.begin() + i);
+        rawBufferIds_.erase(rawBufferIds_.begin() + i);
+        return true;
+      }
+    }
+    return false;
   }
 
   /*
@@ -180,6 +194,18 @@ struct SharedMemoryPools {
     rv.push_back(desc);
 
     return rv;
+  }
+
+  /* Look up the wire descriptor (id, size, fd) of a registered raw buffer so a
+   * single buffer can be shipped to the server after mount. */
+  std::optional<Desc> rawBufferDesc(uint64_t id) {
+    for (size_t i = 0; i < rawBufferIds_.size(); i++) {
+      if (rawBufferIds_[i] == id) {
+        return Desc(rawBufferIds_[i], rawBuffers_[i]->size(),
+                    rawBuffers_[i]->fd());
+      }
+    }
+    return std::nullopt;
   }
 
   void clear() {

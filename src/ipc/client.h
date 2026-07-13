@@ -73,7 +73,18 @@ public:
 
   void setPbdname(std::string pbdname) { pbdname_ = pbdname; }
 
+  /*
+   * Capabilities advertised by the server in its SERVER_HELLO. 0 until the
+   * handshake completes, and 0 for a pre-capability daemon (which omits the
+   * trailing bitmap). Callers gate optional features (e.g. zero-copy) on the
+   * relevant CAP_* bit before using them.
+   */
+  uint64_t serverCaps() const { return serverCaps_; }
+
   bool start(std::string cluster, int host_id, int flags, int timeoutMs) {
+    // Set early so the mount-time control round-trips (sendBuffers) can bound
+    // their ack waits on it, not just the post-mount ones.
+    timeoutMs_ = timeoutMs;
     eventLoopThread_ = std::thread([this, timeoutMs] {
       try {
         std::string sockPath = makeSockPath(pbdname_);
@@ -117,7 +128,6 @@ public:
     cluster_ = cluster;
     hostId_ = host_id;
     flags_ = flags;
-    timeoutMs_ = timeoutMs;
 
     return true;
   }
@@ -160,6 +170,72 @@ public:
   std::optional<uint64_t> registerMemBuffer(std::unique_ptr<MemFd> memfd) {
     std::lock_guard lk(rwLock_);
     return pools_.addRawBuffer(std::move(memfd));
+  }
+
+  /* Drop a locally-registered raw buffer. */
+  bool removeRawBuffer(uint64_t id) {
+    std::lock_guard lk(rwLock_);
+    return pools_.removeRawBuffer(id);
+  }
+
+  /*
+   * Ship a single, already locally-registered raw buffer to the server after
+   * mount. Used for post-mount pfsd_register_shared_buffer; pre-mount buffers
+   * are batched by sendBuffers() during start(). Returns false on error.
+   */
+  bool sendBuffer(uint64_t id) {
+    RegisterBuffersMessage message;
+    std::vector<int> toSend;
+    {
+      std::shared_lock lk(rwLock_);
+      auto desc = pools_.rawBufferDesc(id);
+      if (!desc) {
+        PFSD_CLIENT_ELOG("unknown buffer id %lu", id);
+        return false;
+      }
+      message.buffers.push_back(BufferDesc{desc->id, desc->size});
+      toSend.push_back(desc->fd);
+    }
+
+    std::lock_guard<std::mutex> ctl(ctrlMutex_);
+    ackReceived_ = false;
+    evb_.runInLoopAndWait([this, &message, &toSend] {
+      socket_->writeWithFds(message.serialize(), std::move(toSend));
+      fdSeqNum_ += message.buffers.size();
+    });
+    if (!waitEventMs([this] { return ackReceived_ || error_; }, timeoutMs_)) {
+      PFSD_CLIENT_ELOG("timed out waiting for server ack");
+      return false;
+    }
+    return !error_;
+  }
+
+  /*
+   * Unregister a raw buffer on the server, then drop the local mapping. The
+   * local fd is released only after the server acknowledges it stopped using
+   * its own copy, so no in-flight server I/O can touch a munmap'd region.
+   */
+  bool sendUnregisterBuffer(uint64_t id) {
+    UnregisterBuffersMessage message;
+    message.ids.push_back(id);
+
+    {
+      std::lock_guard<std::mutex> ctl(ctrlMutex_);
+      ackReceived_ = false;
+      evb_.runInLoopAndWait(
+          [this, &message] { socket_->write(message.serialize()); });
+      if (!waitEventMs([this] { return ackReceived_ || error_; }, timeoutMs_)) {
+        PFSD_CLIENT_ELOG("timed out waiting for server ack");
+        return false;
+      }
+      if (error_) {
+        return false;
+      }
+    }
+
+    std::lock_guard lk(rwLock_);
+    pools_.removeRawBuffer(id);
+    return true;
   }
 
   void *getPtrFromSharedBuf(uint64_t bufId, off_t offset) {
@@ -225,7 +301,10 @@ private:
       PFSD_CLIENT_LOG("Sent %zu memfds to server", message.buffers.size());
     });
 
-    waitEvent([this] { return ackReceived_ || error_; });
+    if (!waitEventMs([this] { return ackReceived_ || error_; }, timeoutMs_)) {
+      PFSD_CLIENT_ELOG("timed out waiting for server ack");
+      return false;
+    }
 
     return !error_;
   }
@@ -237,6 +316,7 @@ private:
       message.pbdname = pbdname_;
       message.host_id = host_id;
       message.flags = flags;
+      message.caps = kLocalCaps;
 
       socket_->write(message.serialize());
     });
@@ -333,6 +413,7 @@ private:
         }
         postEvent([this, &message] {
           connectionId_ = message.connectionId;
+          serverCaps_ = message.caps;
           serverHelloReceived_.first = true;
           serverHelloReceived_.second = message.error;
         });
@@ -373,9 +454,10 @@ private:
     cv_.wait(lk, p);
   }
 
-  template <typename Predicate> void waitEventMs(Predicate p, int timeoutMs) {
+  // Returns true if the predicate became satisfied, false on timeout.
+  template <typename Predicate> bool waitEventMs(Predicate p, int timeoutMs) {
     std::unique_lock lk(cvMutex_);
-    cv_.wait_for(lk, std::chrono::milliseconds(timeoutMs), p);
+    return cv_.wait_for(lk, std::chrono::milliseconds(timeoutMs), p);
   }
 
   pfsutil::EventLoop evb_;
@@ -389,6 +471,9 @@ private:
   bool queuesAreReady_;
   std::mutex cvMutex_;
   std::condition_variable cv_;
+  // Serializes post-mount control round-trips (register/unregister buffer),
+  // which share ackReceived_ and the control socket.
+  std::mutex ctrlMutex_;
 
   std::vector<ServerQueue> queues_;
   DCLCRWLock rwLock_;
@@ -400,6 +485,7 @@ private:
   std::pair<bool, int> serverHelloReceived_;
   std::pair<bool, int> remountResult_;
   uint64_t connectionId_;
+  uint64_t serverCaps_ = 0;
 
   bool ackReceived_;
 

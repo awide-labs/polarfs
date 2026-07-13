@@ -320,7 +320,14 @@ pfsd_worker_handle_read(ipc::Server *server, uint64_t connId, ipc::Request *r,
 	size_t read_len = req->r_len;
 
 	auto rbuf =
-		server->getPtr<unsigned char>(connId, r->memBufId, r->offset);
+		server->getPtr<unsigned char>(connId, r->memBufId, r->offset,
+		    read_len);
+	if (rbuf == NULL) {
+		pfsd_error("pid %d read buf out of range: buf %d off %ld len %zu",
+		    g_currentPid, r->memBufId, (long)r->offset, read_len);
+		rsp->error = EINVAL;
+		return;
+	}
 
 	if (req->r_off < 0 || req->r_ino < 0) {
 		pfsd_error("pid %d read invalid ino %ld or offset %lu", g_currentPid,
@@ -355,7 +362,14 @@ pfsd_worker_handle_write(ipc::Server *server, uint64_t connId, ipc::Request *r,
 	CHECK_RSP_ERROR(rsp);
 
 	auto wbuf =
-		server->getPtr<unsigned char>(connId, r->memBufId, r->offset);
+		server->getPtr<unsigned char>(connId, r->memBufId, r->offset,
+		    req->w_len);
+	if (wbuf == NULL) {
+		pfsd_error("pid %d write buf out of range: buf %d off %ld len %zu",
+		    g_currentPid, r->memBufId, (long)r->offset, req->w_len);
+		rsp->error = EINVAL;
+		return;
+	}
 	if (req->w_ino < 0) {
 		pfsd_error("pid %d error inode %ld, offset %lu", g_currentPid,
 		    req->w_ino, req->w_off);

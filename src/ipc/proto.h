@@ -19,7 +19,24 @@ enum MessageType {
   ACK,
   REMOUNT,
   REMOUNT_RESULT,
+  UNREGISTER_BUFFERS,
 };
+
+/*
+ * Protocol capability bits, exchanged as a trailing uint64 bitmap in the
+ * CLIENT_HELLO / SERVER_HELLO handshake. The field is appended after the
+ * existing fields, so a peer built before capabilities existed frames the
+ * (now longer) message by its length prefix and simply ignores the trailing
+ * bytes -- a missing bitmap reads as 0, i.e. "nothing beyond the baseline".
+ * New peers read the bitmap when present. Extend by adding bits here.
+ */
+enum ProtoCap : uint64_t {
+  CAP_ZEROCOPY = 1ull << 0, // register/unregister caller-owned buffers and
+                            // pread_zc/pwrite_zc against them
+};
+
+/* Capabilities this build supports and advertises to its peer. */
+static constexpr uint64_t kLocalCaps = CAP_ZEROCOPY;
 
 struct BufferDesc {
   uint64_t id;
@@ -120,6 +137,7 @@ struct ClientHelloMessage {
   std::string pbdname;
   int host_id;
   int flags;
+  uint64_t caps = 0; // capabilities the client supports; 0 from an old client
 
   std::vector<uint8_t> serialize() const {
     const size_t totalSize =
@@ -129,7 +147,8 @@ struct ClientHelloMessage {
         sizeof(uint32_t) + cluster.size() + // cluster length + data
         sizeof(uint32_t) + pbdname.size() + // pbdname length + data
         sizeof(int32_t) +                   // host_id
-        sizeof(int32_t);                    // flags
+        sizeof(int32_t) +                   // flags
+        sizeof(uint64_t);                   // caps
 
     std::vector<uint8_t> buf(totalSize);
     pfsutil::BufWriter appender(buf.data(), buf.size());
@@ -148,6 +167,7 @@ struct ClientHelloMessage {
 
     appender.writeLE<int32_t>(host_id);
     appender.writeLE<int32_t>(flags);
+    appender.writeLE<uint64_t>(caps);
 
     buf.resize(appender.bytesWritten());
     return buf;
@@ -184,6 +204,9 @@ struct ClientHelloMessage {
 
     host_id = cursor.readLE<int32_t>();
     flags = cursor.readLE<int32_t>();
+
+    /* Trailing, optional: absent from a pre-capability client -> caps stays 0. */
+    caps = cursor.remaining() >= sizeof(uint64_t) ? cursor.readLE<uint64_t>() : 0;
 
     return true;
   }
@@ -389,6 +412,61 @@ struct RegisterBuffersMessage {
   }
 };
 
+struct UnregisterBuffersMessage {
+  std::vector<uint64_t> ids;
+
+  std::vector<uint8_t> serialize() {
+    const size_t totalSize = sizeof(uint32_t) +              // message type
+                             sizeof(uint32_t) +              // total length
+                             sizeof(uint32_t) +              // version
+                             sizeof(uint64_t) * ids.size();  // ids
+
+    std::vector<uint8_t> buf(totalSize);
+    pfsutil::BufWriter appender(buf.data(), buf.size());
+
+    appender.writeLE<uint32_t>(UNREGISTER_BUFFERS);
+    appender.writeLE<uint32_t>(totalSize);
+    appender.writeLE<uint32_t>(1); // version
+
+    for (auto id : ids) {
+      appender.writeLE<uint64_t>(id);
+    }
+
+    buf.resize(appender.bytesWritten());
+    return buf;
+  }
+
+  bool deserialize(const uint8_t *data, size_t len) {
+    if (len < sizeof(uint32_t) * 2) {
+      return false;
+    }
+
+    pfsutil::BufReader cursor(data, len);
+
+    int messageType = cursor.readLE<uint32_t>();
+    size_t totalLength = cursor.readLE<uint32_t>();
+
+    if (messageType != UNREGISTER_BUFFERS) {
+      return false;
+    }
+
+    if (len < totalLength) {
+      return false;
+    }
+
+    auto version = cursor.readLE<uint32_t>();
+    if (version > 1) {
+      return false;
+    }
+
+    while (cursor.position() < totalLength) {
+      ids.push_back(cursor.readLE<uint64_t>());
+    }
+
+    return true;
+  }
+};
+
 struct AckMessage {
   std::vector<uint8_t> serialize() {
     const size_t totalSize = sizeof(uint32_t) + // message type
@@ -422,13 +500,15 @@ struct AckMessage {
 struct ServerHelloMessage {
   uint64_t connectionId;
   int error;
+  uint64_t caps = 0; // capabilities the server supports; 0 from an old server
 
   std::vector<uint8_t> serialize() {
     const size_t totalSize = sizeof(uint32_t) + // message type
                              sizeof(uint32_t) + // total length
                              sizeof(uint32_t) + // version
                              sizeof(uint64_t) + // connectionId
-                             sizeof(int32_t);   // error
+                             sizeof(int32_t) +  // error
+                             sizeof(uint64_t);  // caps
 
     std::vector<uint8_t> buf(totalSize);
     pfsutil::BufWriter appender(buf.data(), buf.size());
@@ -439,6 +519,7 @@ struct ServerHelloMessage {
 
     appender.writeLE<uint64_t>(connectionId);
     appender.writeLE<int32_t>(error);
+    appender.writeLE<uint64_t>(caps);
 
     buf.resize(appender.bytesWritten());
     return buf;
@@ -469,6 +550,9 @@ struct ServerHelloMessage {
 
     connectionId = cursor.readLE<uint64_t>();
     error = cursor.readLE<int32_t>();
+
+    /* Trailing, optional: absent from a pre-capability server -> caps stays 0. */
+    caps = cursor.remaining() >= sizeof(uint64_t) ? cursor.readLE<uint64_t>() : 0;
 
     return true;
   }

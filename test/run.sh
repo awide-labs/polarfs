@@ -129,6 +129,18 @@ if ! ./bin/pfsd_disconnect_test "disk" "$TEST_LOOP_DEVICE_NAME" 19; then
     TEST_FAILED=1
 fi
 
+echo "Running pfsd_zc_test..."
+if ! ./bin/pfsd_zc_test 0 "disk" "$TEST_LOOP_DEVICE_NAME"; then
+    echo "ERROR: pfsd_zc_test failed"
+    TEST_FAILED=1
+fi
+
+echo "Running pfsd_proto_test..."
+if ! ./bin/pfsd_proto_test; then
+    echo "ERROR: pfsd_proto_test failed"
+    TEST_FAILED=1
+fi
+
 if [[ $TEST_FAILED -ne 0 ]]; then
     echo "=== ONE OR MORE TESTS FAILED ==="
     exit 1

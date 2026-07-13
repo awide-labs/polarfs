@@ -57,6 +57,13 @@ template <> struct hash<ipc::BufferId> {
 
 namespace ipc {
 
+// Note on locking: BufferTable is NOT internally synchronized. Its callers in
+// Server hold Server::rwLock_ -- shared while resolving/using a buffer (the
+// lock is taken by getPtrWithLock in handle_request and held for the whole
+// request), exclusive while adding/erasing. That single Server-level lock is
+// what makes dynamic register/unregister safe against in-flight I/O: an erase
+// waits for outstanding readers to drain before the MemFd (and its mmap) goes
+// away.
 class BufferTable {
 public:
   uint64_t addBuffer(uint64_t connectionId, uint64_t id,
@@ -86,11 +93,23 @@ public:
 
   template <typename T>
   T *getPtr(uint64_t connectionId, uint64_t id, off_t offset) {
+    return getPtr<T>(connectionId, id, offset, 0);
+  }
+
+  // Bounds-checked: returns nullptr if the buffer is unknown or the range
+  // [offset, offset + len) does not lie fully within it.
+  template <typename T>
+  T *getPtr(uint64_t connectionId, uint64_t id, off_t offset, size_t len) {
     auto iter = buffers_.find(BufferId(connectionId, id));
-    if (iter != buffers_.cend()) {
-      return reinterpret_cast<T *>((char *)iter->second->buf() + offset);
+    if (iter == buffers_.cend()) {
+      return nullptr;
     }
-    return nullptr;
+    const MemFd *mf = iter->second.get();
+    if (offset < 0 || static_cast<size_t>(offset) > mf->size() ||
+        len > mf->size() - static_cast<size_t>(offset)) {
+      return nullptr;
+    }
+    return reinterpret_cast<T *>((char *)mf->buf() + offset);
   }
 
 private:
@@ -125,6 +144,11 @@ public:
     bufferTable_.addBuffer(clientId, id, std::move(memfd), size);
   }
 
+  void eraseBuffer(uint64_t clientId, uint64_t id) {
+    std::lock_guard lk(rwLock_);
+    bufferTable_.eraseBuffer(clientId, id);
+  }
+
   void addQueue(std::unique_ptr<MemFd> memfd) {
     std::lock_guard lk(rwLock_);
     queueMemfds_.push_back(std::move(memfd));
@@ -140,6 +164,9 @@ public:
     }
   }
 
+  // Resolves the Request struct and returns it together with the shared lock
+  // that keeps the buffer table stable for the whole request. handle_request()
+  // holds this lock across the entire request.
   template <typename T>
   std::pair<T *, std::shared_lock<DCLCRWLock>>
   getPtrWithLock(uint64_t connId, uint64_t bufferId, off_t offset) {
@@ -148,9 +175,16 @@ public:
                           std::move(lk));
   }
 
+  // Lock-free resolve for request handlers that already run under the shared
+  // lock taken by getPtrWithLock() in handle_request().
   template <typename T>
   T *getPtr(uint64_t connId, uint64_t bufferId, off_t offset) {
     return bufferTable_.getPtr<T>(connId, bufferId, offset);
+  }
+
+  template <typename T>
+  T *getPtr(uint64_t connId, uint64_t bufferId, off_t offset, size_t len) {
+    return bufferTable_.getPtr<T>(connId, bufferId, offset, len);
   }
 
   void cleanupClient(uint64_t clientId) {
@@ -259,6 +293,19 @@ private:
 
         AckMessage ack;
         socket_->write(ack.serialize());
+      } else if (type == UNREGISTER_BUFFERS) {
+        UnregisterBuffersMessage message;
+        if (!message.deserialize(msg, msgLen)) {
+          break;
+        }
+
+        for (auto id : message.ids) {
+          pfsd_info("Unregister buffer id: %lu", id);
+          server_->eraseBuffer(clientId_, id);
+        }
+
+        AckMessage ack;
+        socket_->write(ack.serialize());
       } else if (type == CLIENT_HELLO) {
         ClientHelloMessage message;
         if (!message.deserialize(msg, msgLen)) {
@@ -277,6 +324,7 @@ private:
         ServerHelloMessage reply;
         reply.connectionId = clientId_;
         reply.error = err;
+        reply.caps = kLocalCaps;
         socket_->write(reply.serialize());
       } else if (type == REMOUNT) {
         RemountMessage message;

@@ -98,8 +98,8 @@ ssize_t pfsd_write(int fd, const void *buf, size_t len);
 ssize_t pfsd_pread(int fd, void *buf, size_t len, off_t off);
 ssize_t pfsd_pwrite(int fd, const void *buf, size_t len, off_t off);
 
-ssize_t pfsd_pread_zxc(int fd, uint64_t buf_id, off_t buf_off, size_t len, off_t off);
-ssize_t pfsd_pwrite_zxc(int fd, uint64_t buf_id, off_t buf_off, size_t len, off_t off);
+ssize_t pfsd_pread_zc(int fd, uint64_t buf_id, off_t buf_off, size_t len, off_t off);
+ssize_t pfsd_pwrite_zc(int fd, uint64_t buf_id, off_t buf_off, size_t len, off_t off);
 
 int pfsd_truncate(const char *pbdpath, off_t len);
 int pfsd_ftruncate(int fd, off_t len);
@@ -150,6 +150,26 @@ int pfsd_alloc_shared_mem_pool(const char *name, size_t elem_size,
 			       int local_list_limit);
 struct pfsd_buf pfsd_alloc(size_t total_mem);
 void pfsd_free(struct pfsd_buf buf);
+
+/*
+ * Register a caller-owned, fd-backed shared buffer (memfd/shm_open) and get
+ * a buffer id for zero-copy I/O via pfsd_pread_zc/pfsd_pwrite_zc. May be
+ * called before or after pfsd_mount; the SDK dups the fd. Returns the id, or
+ * -1.
+ *
+ * The id survives pfsd_remount (RO->RW upgrade) but NOT a pfsd_umount/
+ * pfsd_mount cycle, which clears the buffer table; re-register after a new
+ * mount. Ids are not reused, so an id cached across umount is stale.
+ */
+int64_t pfsd_register_shared_buffer(int memfd, size_t size);
+
+/*
+ * Unregister a shared buffer previously returned by
+ * pfsd_register_shared_buffer. Must be called after pfsd_mount. The caller is
+ * responsible for ensuring no zero-copy I/O is issued against buf_id after
+ * this returns. Returns 0 on success, or -1.
+ */
+int pfsd_unregister_shared_buffer(int64_t buf_id);
 
 #ifdef __cplusplus
 }

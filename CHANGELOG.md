@@ -8,6 +8,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Zero-copy I/O path: callers register an fd-backed shared buffer
+  (`memfd_create`/`shm_open`) via `pfsd_register_shared_buffer()` and run device
+  I/O directly out of it through `pfsd_pread_zc`/`pfsd_pwrite_zc`, eliminating the
+  memcpy into the PFS shared-memory pool that the ordinary read/write path
+  incurs. Buffers can be registered/deregistered before or after mount (XCOM-175)
+
 ### Fixed
 
 - Fix memory leak in pfsd_mount()/pfsd_umount() pair. (TTDB-1801)
