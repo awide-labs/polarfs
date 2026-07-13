@@ -61,6 +61,16 @@ add_executable(pfsd_proto_test
     pfsd_proto_test.cc
 )
 
+# Build this single-TU test without LTO. Ubuntu's GCC 15 -flto link drops the
+# weak COMDAT defs of some header-inline libstdc++/BufReader helpers (e.g.
+# std::vector<uint8_t>::~vector, basic_string::_S_copy, BufReader::readLE<u64>)
+# during link-time recompilation while keeping references to them from .cold
+# clones inside libpfsd.a -- the objects define the symbols, but the -flto link
+# loses them.
+set_source_files_properties(pfsd_proto_test.cc
+    PROPERTIES COMPILE_OPTIONS "-fno-lto"
+)
+
 target_link_libraries(pfsd_proto_test
     pfsd
     gtest
