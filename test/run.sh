@@ -44,7 +44,7 @@ trap cleanup EXIT
 echo "=== START SETUP ==="
 
 echo "Creating ${TEST_IMAGE_SIZE_GB}GB test image file..."
-fallocate -l ${TEST_IMAGE_SIZE_GB}G "$TEST_IMAGE_FILE"
+truncate -s ${TEST_IMAGE_SIZE_GB}G "$TEST_IMAGE_FILE"
 
 echo "Attaching image to loop device..."
 # Create loop device node if it doesn't exist

@@ -605,7 +605,7 @@ EOF
     # Create and attach image
     rm -f "$TEST_IMAGE_FILE"
     touch "$TEST_IMAGE_FILE"
-    fallocate -l "${TEST_IMAGE_SIZE_GB}G" "$TEST_IMAGE_FILE"
+    truncate -s "${TEST_IMAGE_SIZE_GB}G" "$TEST_IMAGE_FILE"
     if ! losetup --direct-io=on "$TEST_LOOP_DEVICE" "$TEST_IMAGE_FILE"; then
         echo "ERROR: cannot attach loop device"
         exit 1
