@@ -72,7 +72,7 @@ fdtbl_wrunlock() {
 void pfsd_sdk_file_init()
 {
 	pthread_mutexattr_t attr;
-	int err = pthread_mutexattr_init(&attr);
+	int err [[maybe_unused]] = pthread_mutexattr_init(&attr);
 	pfsd_file_t *file = NULL;
 	err |= pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
 	err |= pthread_mutexattr_destroy(&attr);

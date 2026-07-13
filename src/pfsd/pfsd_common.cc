@@ -37,7 +37,7 @@ pfsd_getpid_slow()
 void
 pfsd_robust_mutex_init(pthread_mutex_t *mutex)
 {
-	int r = 0;
+	int r [[maybe_unused]] = 0;
 
 	pthread_mutexattr_t attr;
 	r |= pthread_mutexattr_init(&attr);
