@@ -359,6 +359,7 @@ paxos_file_make(pfs_mount_t *mnt, int nuser, size_t logsize)
 		pfs_etrace("can't fill %s with zero\n", PFS_PAXOS_FILE);
 		exit(EIO);
 	}
+	free(data);
 	/*
 	 * pfs_leader_init opens .pfs-paxos again, so fd should
 	 * be closed before that.
