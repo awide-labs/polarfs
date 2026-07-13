@@ -15,6 +15,9 @@ cleanup() {
     echo ""
     echo "=== CLEANUP (exit code: $exit_code) ==="
 
+    # Preserve PFSD logs
+    cp /var/log/pfsd-${TEST_LOOP_DEVICE_NAME}/pfsd.log /var/log/pfsd-$TEST_LOOP_DEVICE_NAME.log
+
     # Stop daemon if it's running
     if [[ -n "${TEST_LOOP_DEVICE_NAME:-}" ]]; then
         echo "Stopping PFSD..."

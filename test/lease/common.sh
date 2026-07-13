@@ -593,9 +593,11 @@ trace_plevel=${LEASE_TEST_TRACE_PLEVEL}
 EOF
 
     mkdir -p /var/run/pfs /var/log
-    # Truncate so previous run's traces don't mix with this run, but the
-    # file survives for post-mortem if a test fails mid-run.
-    : > "$PFS_LOG"
+
+    # Write a setup mark to the logs, but do not truncate them,
+    # because otherwise with LEASE_TEST_FAIL_FAST=0 logs of a failed test
+    # will be overwritten
+    echo "Lease Test Setup" >> "$PFS_LOG"
 
     # Kill any processes holding the loop device, then force-detach it.
     # This handles leftover state from a previous incomplete test run.
