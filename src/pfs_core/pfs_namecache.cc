@@ -162,6 +162,13 @@ pfs_nchinit(void)
 	TAILQ_INIT(&nc_lru);
 }
 
+static void __attribute__((destructor))
+pfs_nchdestroy(void)
+{
+	pfs_mem_free(nchashtbl, M_NAMECACHE);
+	pfs_mem_free(denohashtbl, M_NAMECACHE);
+}
+
 static inline u_long
 calc_hash(pfs_mount_t *mnt, pfs_ino_t ino, const char *name, size_t namelen)
 {
