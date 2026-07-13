@@ -15,6 +15,8 @@
 
 set -euo pipefail
 
+export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Verify required binaries exist

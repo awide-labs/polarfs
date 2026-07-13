@@ -7,6 +7,8 @@ export TEST_LOOP_DEVICE="${TEST_LOOP_DEVICE:-/dev/loop100}"
 export TEST_LOOP_DEVICE_NAME="${TEST_LOOP_DEVICE_NAME:-loop100}"
 export TEST_IMAGE_SIZE_GB="${TEST_IMAGE_SIZE_GB:-30}"
 
+export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
+
 # Cleanup function to ensure daemon is stopped and resources are cleaned up even on failure
 cleanup() {
     local exit_code=$?

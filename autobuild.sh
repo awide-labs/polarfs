@@ -18,10 +18,16 @@ set -e
 BASE_DIR=$(cd "$(dirname "$0")"; pwd)
 cd "$BASE_DIR"
 
+CMAKE_EXTRA_FLAGS=""
+if [[ "${ENABLE_SANITIZERS:-}" == "1" ]]; then
+    CMAKE_EXTRA_FLAGS="-DENABLE_SANITIZERS=ON"
+    echo -e "\033[33m Sanitizers enabled (address + undefined behavior) \033[0m"
+fi
+
 echo -e "\033[33m begin compile pfsdaemon|pfs|libpfs.a|libpfsd.a \033[0m"
 mkdir -p build
 pushd build
-cmake ../
+cmake ../ $CMAKE_EXTRA_FLAGS
 make -j$(nproc)
 popd
 

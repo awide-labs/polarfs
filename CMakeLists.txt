@@ -60,6 +60,12 @@ set(CMAKE_EXE_LINKER_FLAGS
 
 set(COMMON_FLAGS ${COMMON_FLAGS}  -DPFS_DISK_IO_ONLY)
 
+option(ENABLE_SANITIZERS "Enable sanitizers (address + UB)" OFF)
+
+if(ENABLE_SANITIZERS)
+    set(COMMON_FLAGS "${COMMON_FLAGS}" -fsanitize=address,undefined)
+endif()
+
 set(CXX_FLAGS
   ${COMMON_FLAGS}
   -std=c++20
