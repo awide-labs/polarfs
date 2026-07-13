@@ -103,7 +103,7 @@ int main(int argc, char **argv)
 
 std::string get_fname(const char *name)
 {
-	return std::string("/") + std::string(device) + name;
+	return std::string("/") + device + name;
 }
 
 void mount_fs(void)
