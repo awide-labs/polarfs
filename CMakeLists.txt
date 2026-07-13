@@ -27,6 +27,7 @@ set(COMMON_FLAGS
   #-fsanitize=address
   #-DEV_STANDALONE
   -Wall
+  -Werror
   -Wno-deprecated-declarations
   -Wno-unused-result
   -Wno-format-overflow
