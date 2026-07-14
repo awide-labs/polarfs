@@ -29,13 +29,8 @@
 
 #define DISK_NR_EVENTS		(16)
 
-enum {
-	DISKTRIM_ENABLE		= 1,
-	DISKTRIM_DISABLE	= 2,
-};
-
-static int64_t diskdev_trim_enable = DISKTRIM_DISABLE;
-PFS_OPTION_REG(diskdev_trim_enable, pfs_check_ival_normal);
+static int64_t diskdev_trim_enable = PFS_OPT_ENABLE;
+PFS_OPTION_REG(diskdev_trim_enable, pfs_check_ival_switch);
 
 static int64_t diskdev_flush_enable = PFS_OPT_ENABLE;
 PFS_OPTION_REG(diskdev_flush_enable, pfs_check_ival_switch);
@@ -402,7 +397,7 @@ pfs_diskdev_io_trim(pfs_diskdev_t *dkdev, pfs_devio_t *io)
 	int err;
 	uint64_t range[2];
 
-	if (diskdev_trim_enable == DISKTRIM_DISABLE)
+	if (diskdev_trim_enable != PFS_OPT_ENABLE)
 		return 0;
 
 	PFS_ASSERT(pfs_diskdev_dio_aligned(dkdev, io->io_bda));

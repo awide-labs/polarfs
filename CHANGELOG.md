@@ -8,6 +8,25 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `mountstat_enable` now defaults to off to remove per-I/O stats overhead;
+  re-enable per mount when latency stats are needed (XCOM-176)
+- `diskdev_trim_enable` now defaults to on so freed space is TRIMmed on the
+  local block-device backend. The option is now a standard `0/1` switch, so
+  `=0` disables and `=1` enables (previously `=0` was rejected and `=2`
+  disabled it) (XCOM-176)
+
+### Removed
+
+- Removed the never-read `orphan_interval` and `orphan_select_max_num`
+  options; these knobs had no effect (XCOM-176)
+- Removed unregistered dead keys from `etc/polarfs.conf`:
+  `paxos_wait_time`, `paxos_acquire_time`, `paxos_hold_time`,
+  `io_wait_deadline`, `pangu_client_nthread`, `pangu_iodepth`, and
+  `polar_iodepth` (XCOM-176)
+- Dropped the dead `pfsd` command-line flags `-l` and `-i` (XCOM-176)
+
 ## [2.2.0] - 2026-07-13
 
 ### Added

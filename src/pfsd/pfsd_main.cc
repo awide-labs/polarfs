@@ -147,10 +147,8 @@ int main(int ac, char *av[])
 
 	g_nworkers = g_option.o_workers;
 
+	/* queue count is derived and bounded (<= workers, <= 256) in sanity_check() */
 	int n_queues = g_option.o_queues;
-	if (n_queues <= 0) {
-		n_queues = std::thread::hardware_concurrency();
-	}
 
 	for (int i = 0; i < n_queues; i++) {
 		const size_t capacity = 1024;

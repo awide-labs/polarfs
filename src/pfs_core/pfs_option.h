@@ -22,7 +22,6 @@
 #define PFS_OPT_ENABLE	1
 
 #define PFS_MAX_OPTLEN	128
-#define	MAX_NORPHAN	500
 
 typedef struct msg_header msg_header_t;
 typedef struct msg_option msg_option_t;

@@ -196,7 +196,7 @@ pfs_option_update_value(const char *name, const char *value, void *data)
 		break;
 	}
 	if (!flag) {
-		pfs_itrace("find unknown option name %s\n", name);
+		pfs_etrace("find unknown option name %s\n", name);
 		if (ab)
 			pfs_adminbuf_printf(ab, "%-36s\t%-10ld\t%-10ld\tn/a\n",
 					    name, ival, 0);

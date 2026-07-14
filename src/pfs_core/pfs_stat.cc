@@ -23,7 +23,7 @@
 #include "pfs_option.h"
 #include "pfs_config.h"
 
-static int64_t		mountstat_enable = PFS_OPT_ENABLE;
+static int64_t		mountstat_enable = PFS_OPT_DISABLE;
 PFS_OPTION_REG(mountstat_enable, pfs_check_ival_switch);
 
 #define MNT_STAT_SIZE (8 << 10)

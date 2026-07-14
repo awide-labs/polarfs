@@ -239,23 +239,8 @@ PFS_OPTION_REG(discard_ninp, pfs_check_ival_normal);
 static int64_t poll_interval = 1;
 PFS_OPTION_REG(poll_interval, pfs_check_ival_normal);
 
-static int64_t orphan_interval = 1;
-PFS_OPTION_REG(orphan_interval, pfs_check_ival_normal);
-
 static int64_t metadata_check_concurrency = 16;
 PFS_OPTION_REG(metadata_check_concurrency, pfs_check_ival_normal);
-
-bool
-pfs_check_ival_orphan_select(void *data)
-{
-	int64_t integer_val = *(int64_t*)data;
-	if (integer_val <= 0 || integer_val > MAX_NORPHAN)
-		return false;
-	return true;
-}
-
-static int64_t orphan_select_max_num = 100;
-PFS_OPTION_REG(orphan_select_max_num, pfs_check_ival_orphan_select);
 
 static int64_t readtx_skip_sync = PFS_OPT_ENABLE;
 PFS_OPTION_REG(readtx_skip_sync, pfs_check_ival_switch);
