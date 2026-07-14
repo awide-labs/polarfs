@@ -1,56 +1,102 @@
-You can refer to [Readme-CN](Readme-CN.md) for introduction in Chinese.
-# What is PFS
-The PolarDB File System (hereafter simplified as PFS or PolarFS) is a high-performance Distributed File System in User Space that is developed by Alibaba Cloud and used in PolarDB. PFS follows the standards of Portable Operating System Interface (POSIX). 
+<div align="center">
 
-# Changelog
+# Awide PolarFS
+
+**A high-performance user-space POSIX distributed file system for cloud-native databases**
+
+[![official site](https://img.shields.io/badge/official%20site-blueviolet?style=flat)](https://awide.tech/awidepolar)
+
+[![GitHub License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat)](./LICENSE)
+[![github-issues](https://img.shields.io/github/issues/awide-labs/polarfs?style=flat&logo=github)](https://github.com/awide-labs/polarfs/issues)
+[![github-pullrequest](https://img.shields.io/github/issues-pr/awide-labs/polarfs?style=flat&logo=github)](https://github.com/awide-labs/polarfs/pulls)
+[![github-forks](https://img.shields.io/github/forks/awide-labs/polarfs?style=flat&logo=github)](https://github.com/awide-labs/polarfs/network/members)
+[![github-stars](https://img.shields.io/github/stars/awide-labs/polarfs?style=flat&logo=github)](https://github.com/awide-labs/polarfs/stargazers)
+
+</div>
+
+## Overview
+
+Awide PolarFS (PFS) is a high-performance, user-space distributed file system
+that complies with the POSIX standard. It is maintained by [Awide
+Labs](https://awide.tech) and provides shared-storage I/O for [Awide
+Polar](https://github.com/awide-labs/polar). This project is derived from the
+[PolarDB File System](https://github.com/ApsaraDB/PolarDB-FileSystem), an
+open-source file system originally released by Alibaba Cloud.
+
+## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md).
 
-# Quick Start
-PFS for PostgreSQL uses the background process **_pfsdaemon_** to provide services. PFS for PostgreSQL is developed and tested based on AliOS and CentOS 7.5. Theoretically, PFS for PostgreSQL can also be built based on other Linux versions. 
-## Install Dependencies
-In the following example, CentOS 7.5 is selected. Before you build PFS for PostgreSQL, install the following software:
+## Quick Start
 
-- [CMake](https://cmake.org/): The CMake version must be 2.8 or later. 
-- [GCC or G++](http://www.gnu.org/software/gcc/): The GNU Compiler Collection (GCC) version or the GNU C++ Compiler (G++) version must be 4.8.5 or later. 
-- [zlog](https://github.com/HardySimpson/zlog/releases): The zlog version must be 1.2.12 or later. 
+Awide PolarFS uses the background process **_pfsdaemon_** to provide services.
+It is developed and tested on Rocky Linux and Ubuntu. Theoretically, it can
+also be built on other Linux distributions.
+
+### Install Dependencies
+
+In the following example, Rocky Linux 9 is selected. Before you build Awide
+PolarFS, install the following software:
+
+- [CMake](https://cmake.org/): version 2.8 or later
+- [GCC or G++](http://www.gnu.org/software/gcc/): version 4.8.5 or later
+- [zlog](https://github.com/HardySimpson/zlog/releases): version 1.2.12 or later
 - [libaio-devel](https://pagure.io/libaio)
 
-We recommend that you use `yum` or `apt-get` command to install CMake, GCC or G++, and libaio-devel. 
-To install zlog, you must download the source code and run `make && sudo make install` command. zlog is installed in the _/usr/local/lib_ directory. If the dynamic libraries cannot be located when pfsdaemon is running, you can run `ldconfig` command to add _/usr/local/lib_ directory into the settings of dynamic libraries. <br><br>
-We also provide you installation by rpm package. If you use rpm package installation, skip the two steps of "Compile" and "Install pfsdaemon".
+We recommend that you use `yum` or `apt-get` to install CMake, GCC or G++, and
+libaio-devel.
 
-## Compile
-After the dependencies are installed, go to the root directory of PFS source code and run the autobuild.sh script to compile PFS.
+To install zlog, download the source code and run `make && sudo make install`.
+zlog is installed in `/usr/local/lib`. If dynamic libraries cannot be located
+when pfsdaemon is running, run `ldconfig` to refresh the loader cache.
+
+We also provide RPM and DEB packages. If you install from a package, skip the
+**Compile** and **Install pfsdaemon** sections below.
+
+### Compile
+
+After the dependencies are installed, go to the root directory of the source
+tree and run:
+
 ```
 ./autobuild.sh
 ```
-## Install pfsdaemon
-To install or uninstall pfsdaemon, you must be granted the root permissions. 
-After you compile PFS, run the install.sh script to automatically install pfsdaemon.
+
+### Install pfsdaemon
+
+Installing or uninstalling pfsdaemon requires root privileges.
+
+After you compile Awide PolarFS, run:
+
 ```
 sudo ./install.sh
 ```
-## Run pfsdaemon
 
-##### 1. Format the storage devices of PFS. 
+### Run pfsdaemon
 
-   First, run the following command to find the existing block devices:
+##### 1. Format the storage devices
+
+First, find the existing block devices:
 
 ```
 lsblk
 ```
-​		Then, select the block device that you want to format, such as `nvme1n1`, and run the following command to format the device:
+
+Then select the block device to format, such as `nvme1n1`, and run:
+
 ```
 sudo pfs -C disk mkfs nvme1n1
 ```
 
-##### 2. Run the following command to start pfsdaemon:
+##### 2. Start pfsdaemon
+
 ```
 sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme1n1
 ```
-​		 `-p nvme1n1` is a parameter that specifies the device name, and it is required. 
-​		The following parameters are optional in the command:
+
+`-p nvme1n1` specifies the device name and is required.
+
+Optional parameters:
 
 ```
 -f (not daemon mode)
@@ -62,68 +108,72 @@ sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme1n1
 -i #inode_list_size
 ```
 
-##### 3. Run the following command to stop pfsdaemon:
+##### 3. Stop pfsdaemon
+
 ```
 sudo /usr/local/polarstore/pfsd/bin/stop_pfsd.sh nvme1n1
 ```
-`			nvme1n1` specifies the device name. 
 
-##### 4. Clear the files that are generated when pfsdaemon is running. 
+##### 4. Clean up runtime files
 
-   After stopping pfsdaemon, run the following command to clear the temporary files, logs and shared memory files that are generated when pfsdaemon is running:
+After stopping pfsdaemon, clear temporary files, logs, and shared memory files:
 
 ```
 sudo /usr/local/polarstore/pfsd/bin/clean_pfsd.sh nvme1n1
 ```
-`nvme1n1` specifies the device name. 
 
-##### 5. Use the PFS tool to check whether PFS is running as expected. 
+##### 5. Verify PFS is running
 
-   Perform common operations on files to verify that PFS is running as
-    expected. For more information, see Instruction to the [PFS tool
-    ](docs/PFS_Tools-EN.md). 
-   For example, you can run the following commands to view the new file hello.txt:
+Perform common file operations to verify that PFS is running as expected. See
+the [PFS tool manual](docs/PFS_Tools-EN.md).
+
+Example:
 
 ```
 sudo pfs -C disk touch /nvme1n1/hello.txt
 sudo pfs -C disk ls /nvme1n1/
 ```
-​		`nvme1n1` specifies the device name. 
-## Uninstall pfsdaemon
-To uninstall pfsdaemon, you must be granted the root permissions. 
 
-##### 1. Run the following command to stop pfsdaemon:
+### Uninstall pfsdaemon
+
+##### 1. Stop pfsdaemon
+
 ```
 sudo /usr/local/polarstore/pfsd/bin/stop_pfsd.sh nvme1n1
 ```
-`	nvme1n1` specifies the device name. 
 
-##### 2. Run the uninstall.sh script to uninstall pfsdaemon. 
+##### 2. Uninstall
+
 ```
 sudo ./uninstall.sh
 ```
-# Documentation
-The **doc** folder includes the following file:
 
-- [PFS_Tools-EN.md](docs/PFS_Tools-EN.md): user manual about the commands of PFS
- tool.
+## FUSE
 
-# Contributing
+See [Readme-FUSE.md](Readme-FUSE.md) for mounting Awide PolarFS through FUSE.
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to this project.
+## Documentation
 
-# Software License
-PFS is developed based on[ the open source software license Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
-# Publications
+- [PFS tool manual](docs/PFS_Tools-EN.md)
 
-- PolarFS: An Ultra-low Latency and Failure Resilient Distributed File System for Shared Storage Cloud Database in VLDB 2018
-- POLARDB Meets Computational Storage: Efficiently Support Analytical Workloads in Cloud-Native Relational Database in FAST 2020
+## Contributing
 
-# Contact us
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-- For more information about the ApsaraDB PolarDB PostgreSQL-compatible edition, see [PolarDB Official Site](https://help.aliyun.com/product/172538.html).
-- Use the DingTalk application to scan the following QR code and join the DingTalk group.
+## Software License
 
-![](https://raw.githubusercontent.com/alibaba/PolarDB-for-PostgreSQL/main/doc/PolarDB-EN/pic/polardb_group.png)
-​
+Awide PolarFS is released under the
+[GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.html)
+(AGPLv3). See [LICENSE](./LICENSE) for the full license text.
 
+This project is developed from PolarFS by Alibaba Cloud, which is licensed
+under the Apache License 2.0. Portions of the codebase retain that upstream
+license as described in [NOTICE](./NOTICE). Awide PolarFS also contains
+third-party components under other open source licenses; see [NOTICE](./NOTICE)
+for details.
+
+## Contact
+
+For product information, see the [Awide Polar website](https://awide.tech/awidepolar).
+
+For support or contribution questions, open an issue or email `info@awide.io`.

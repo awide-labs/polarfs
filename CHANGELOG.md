@@ -190,7 +190,7 @@ causing SIGILL when running on older CPUs or in virtualized environments. Now
 
 ## [2.0.0] - 2025-08-11
 
-This is the first release by AwydeX. Changes compared to the open source PolarFS
+This is the first release by Awide Labs. Changes compared to the open source PolarFS
 released by Alibaba (commit d0c5dc6):
 
 ### Added
@@ -216,18 +216,18 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/Awydex/polarfs/compare/v3.0.0..master
-[3.0.0]: https://github.com/Awydex/polarfs/compare/v2.2.0..v3.0.0
-[2.2.0]: https://github.com/Awydex/polarfs/compare/v2.1.10..v2.2.0
-[2.1.10]: https://github.com/Awydex/polarfs/compare/v2.1.9..v2.1.10
-[2.1.9]: https://github.com/Awydex/polarfs/compare/v2.1.8..v2.1.9
-[2.1.8]: https://github.com/Awydex/polarfs/compare/v2.1.7..v2.1.8
-[2.1.7]: https://github.com/Awydex/polarfs/compare/v2.1.6..v2.1.7
-[2.1.6]: https://github.com/Awydex/polarfs/compare/v2.1.5..v2.1.6
-[2.1.5]: https://github.com/Awydex/polarfs/compare/v2.1.4..v2.1.5
-[2.1.4]: https://github.com/Awydex/polarfs/compare/v2.1.3..v2.1.4
-[2.1.3]: https://github.com/Awydex/polarfs/compare/v2.1.2..v2.1.3
-[2.1.2]: https://github.com/Awydex/polarfs/compare/v2.1.1..v2.1.2
-[2.1.1]: https://github.com/Awydex/polarfs/compare/v2.1.0..v2.1.1
-[2.1.0]: https://github.com/Awydex/polarfs/compare/v2.0.0..v2.1.0
-[2.0.0]: https://github.com/Awydex/polarfs/compare/d0c5dc6..v2.0.0
+[unreleased]: https://github.com/awide-labs/polarfs/compare/v3.0.0..master
+[3.0.0]: https://github.com/awide-labs/polarfs/compare/v2.2.0..v3.0.0
+[2.2.0]: https://github.com/awide-labs/polarfs/compare/v2.1.10..v2.2.0
+[2.1.10]: https://github.com/awide-labs/polarfs/compare/v2.1.9..v2.1.10
+[2.1.9]: https://github.com/awide-labs/polarfs/compare/v2.1.8..v2.1.9
+[2.1.8]: https://github.com/awide-labs/polarfs/compare/v2.1.7..v2.1.8
+[2.1.7]: https://github.com/awide-labs/polarfs/compare/v2.1.6..v2.1.7
+[2.1.6]: https://github.com/awide-labs/polarfs/compare/v2.1.5..v2.1.6
+[2.1.5]: https://github.com/awide-labs/polarfs/compare/v2.1.4..v2.1.5
+[2.1.4]: https://github.com/awide-labs/polarfs/compare/v2.1.3..v2.1.4
+[2.1.3]: https://github.com/awide-labs/polarfs/compare/v2.1.2..v2.1.3
+[2.1.2]: https://github.com/awide-labs/polarfs/compare/v2.1.1..v2.1.2
+[2.1.1]: https://github.com/awide-labs/polarfs/compare/v2.1.0..v2.1.1
+[2.1.0]: https://github.com/awide-labs/polarfs/compare/v2.0.0..v2.1.0
+[2.0.0]: https://github.com/awide-labs/polarfs/compare/d0c5dc6..v2.0.0

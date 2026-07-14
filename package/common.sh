@@ -36,6 +36,6 @@ build_package() {
         -d libunwind \
         -d python3 \
         --force \
-        --description "PolarFS distributed file system" \
+        --description "Awide PolarFS distributed file system" \
         -C install etc/ usr/ var/
 }

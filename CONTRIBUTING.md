@@ -1,10 +1,23 @@
-# Contributing to PolarFS
+# Contributing to Awide PolarFS
 
-Thank you for your interest in contributing to PolarFS! This document outlines the guidelines and requirements for contributing to this project.
+Thank you for your interest in contributing to Awide PolarFS! This document
+outlines the guidelines and requirements for contributing to this project.
+
+Awide PolarFS is the distributed file system used by
+[Awide Polar](https://github.com/awide-labs/polar). It is developed from
+PolarFS, the open source file system originally released by Alibaba Cloud.
+
+## Before Contributing
+
+- Sign the [Individual Contributor License Agreement](legal/INDIVIDUAL-CLA.md)
+  (or have your employer sign the [Corporate CLA](legal/CORPORATE-CLA.md))
+  via a [CLA signing issue](https://github.com/awide-labs/polarfs/issues/new?template=cla_signing.yml)
+  or email to `info@awide.io`. A maintainer adds the `cla-signed` label on your
+  pull request after verification.
 
 ## Getting Started
 
-1. Fork the repository
+1. Fork [`awide-labs/polarfs`](https://github.com/awide-labs/polarfs)
 2. Clone your fork locally
 3. Create a new branch for your changes
 4. Make your changes following the guidelines below
@@ -28,7 +41,7 @@ Refs: <reference>[, <reference>...]
 
 - **Header (first line)**: Must be 72 characters or less
 - **Body lines**: Each line must be 72 characters or less
-- **Refs footer**: Mandatory - must contain a comma-separated list of issue references (e.g., `Refs: PROJ-1234` or `Refs: PROJ-1234, PROJ-5678`). Only one `Refs:` footer is allowed per commit
+- **Refs footer**: Mandatory - must contain a comma-separated list of issue references (e.g., `Refs: GH-1234` or `Refs: GH-1234, GH-5678`). Only one `Refs:` footer is allowed per commit
 
 ### Valid Types
 
@@ -74,7 +87,7 @@ feat(api): add user authentication endpoint
 
 Implement JWT-based authentication for the REST API.
 
-Refs: PROJ-1234
+Refs: GH-1234
 ```
 
 ```
@@ -82,13 +95,13 @@ fix: resolve memory leak in cache handler
 
 The cache was not properly releasing resources on cleanup.
 
-Refs: PROJ-5678, PROJ-5679
+Refs: GH-5678, GH-5679
 ```
 
 ```
 docs: update installation instructions
 
-Refs: PROJ-9012
+Refs: GH-9012
 ```
 
 ```
@@ -98,7 +111,7 @@ Use bitmap index scans instead of sequential scans for queries with
 large result sets. This improves query performance by reducing I/O
 operations and memory usage.
 
-Refs: PROJ-3456
+Refs: GH-3456
 See: https://www.postgresql.org/docs/current/indexes-bitmap-scans.html
 ```
 
@@ -112,7 +125,7 @@ environment and does not affect production. The issue was caused by
 improper lock ordering during parallel test execution.
 
 Skip-changelog: true
-Refs: PROJ-7890
+Refs: GH-7890
 ```
 
 ## Changelog Requirements
@@ -140,21 +153,18 @@ We follow the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. A
 
 ### Entry Format
 
-Each changelog entry (paragraph starting with `- ` at the first column) must end with a Jira issue reference in the format `(PROJ-NNNN)`, optionally followed by `.` or `:`. This is enforced by CI checks.
+Each changelog entry (paragraph starting with `- ` at the first column) must end with a Jira issue reference in the format `(GH-NNNN)`, optionally followed by `.` or `:`. This is enforced by CI checks.
 
 **Valid examples:**
 
 ```markdown
-- Add new configuration parameter `polar_enable_parallel_ddl` (PROJ-1234)
+- Add zero-copy read/write support for registered shared buffers (GH-1234)
 
-- Reduce contention on the flush list on RW node by splitting it into multiple
-  partitions (currently 64), with each partition having its own own lock,
-  control structure and statistics (PROJ-5678)
+- Change default worker count and remove unused configuration options (GH-5678)
 
-- The following third-party extensions have been removed (PROJ-9012):
-  - hll
-  - log_fdw
-  - pase
+- The following legacy configuration keys have been removed (GH-9012):
+  - pangu_*
+  - obsolete debug flags
 ```
 
 ### Example
@@ -163,11 +173,11 @@ Each changelog entry (paragraph starting with `- ` at the first column) must end
 ## [Unreleased]
 
 ### Added
-- New configuration parameter `polar_enable_parallel_ddl` (PROJ-1234)
+- Zero-copy I/O via caller-registered shared buffers (GH-1234)
 
 ### Performance
-- Optimized index creation for large tables (PROJ-2345)
-- Reduced memory usage in query planner (PROJ-3456)
+- Optimized metadata path for large directories (GH-2345)
+- Reduced memory usage in pfsdaemon worker pool (GH-3456)
 ```
 
 ### Skipping Changelog Updates
@@ -187,10 +197,11 @@ Skip-changelog: true
 ## Pull Request Process
 
 1. Ensure all CI checks pass
-2. Update documentation if needed
-3. Request review from maintainers
-4. Address any feedback
-5. Once approved, your PR will be merged
+2. Ensure the `cla-signed` label is present (see Before Contributing)
+3. Update documentation if needed
+4. Request review from maintainers
+5. Address any feedback
+6. Once approved, your PR will be merged
 
 ## Questions?
 

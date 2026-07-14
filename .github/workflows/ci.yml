@@ -95,8 +95,8 @@ jobs:
             IMAGE_NAME="${dockerfile#docker/builder/Dockerfile.}"
             echo "Building $IMAGE_NAME from $dockerfile"
             docker build -t "$IMAGE_NAME" -f "$dockerfile" .
-            docker tag "$IMAGE_NAME" "ghcr.io/awydex/pfs-build-${IMAGE_NAME}"
-            docker push "ghcr.io/awydex/pfs-build-${IMAGE_NAME}"
+            docker tag "$IMAGE_NAME" "ghcr.io/awide-labs/pfs-build-${IMAGE_NAME}"
+            docker push "ghcr.io/awide-labs/pfs-build-${IMAGE_NAME}"
           done
 
   # Determine which images to build based on branch
@@ -141,11 +141,11 @@ jobs:
 
       - name: Pull builder image
         run: |
-          docker pull "ghcr.io/awydex/pfs-build-${{ matrix.image }}" || {
+          docker pull "ghcr.io/awide-labs/pfs-build-${{ matrix.image }}" || {
             echo "Error: Builder image not found in registry. Run build-docker-images first."
             exit 1
           }
-          docker tag "ghcr.io/awydex/pfs-build-${{ matrix.image }}" "${{ matrix.image }}"
+          docker tag "ghcr.io/awide-labs/pfs-build-${{ matrix.image }}" "${{ matrix.image }}"
 
       - name: Build
         run: |
@@ -182,11 +182,11 @@ jobs:
 
       - name: Pull builder image
         run: |
-          docker pull "ghcr.io/awydex/pfs-build-${{ matrix.image }}" || {
+          docker pull "ghcr.io/awide-labs/pfs-build-${{ matrix.image }}" || {
             echo "Error: Builder image not found in registry. Run build-docker-images first."
             exit 1
           }
-          docker tag "ghcr.io/awydex/pfs-build-${{ matrix.image }}" "${{ matrix.image }}"
+          docker tag "ghcr.io/awide-labs/pfs-build-${{ matrix.image }}" "${{ matrix.image }}"
 
       - name: Build package
         id: build

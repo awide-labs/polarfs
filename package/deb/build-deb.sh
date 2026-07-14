@@ -52,7 +52,7 @@ build_package() {
         -d libaio1 \
         -d python3 \
         --force \
-        --description "PolarFS distributed file system" \
+        --description "Awide PolarFS distributed file system" \
         -C install etc/ usr/ var/
 }
 
