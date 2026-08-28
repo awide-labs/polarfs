@@ -526,8 +526,6 @@ pfs_create_mount(const char *cluster, const char *pbdname, int host_id,
 	cond_init(&mnt->mnt_poll_cond, NULL);
 	mutex_init(&mnt->mnt_discard_mtx);
 	cond_init(&mnt->mnt_discard_cond, NULL);
-	mutex_init(&mnt->mnt_stat_mtx);
-	cond_init(&mnt->mnt_stat_cond, NULL);
 
 	/**
 	 * MySQL is bounded to a fixed io channel. Otherwise vestigial
@@ -672,8 +670,6 @@ pfs_destroy_mount(pfs_mount_t *mnt)
 	cond_destroy(&mnt->mnt_poll_cond);
 	mutex_destroy(&mnt->mnt_discard_mtx);
 	cond_destroy(&mnt->mnt_discard_cond);
-	mutex_destroy(&mnt->mnt_stat_mtx);
-	cond_destroy(&mnt->mnt_stat_cond);
 
 	for (i = 0; i < BDS_NMAX; i++) {
 		if (mnt->mnt_bdroot[i])
@@ -2497,44 +2493,72 @@ pfs_remount(const char *cluster, const char *pbdname, int host_id, int flags)
 	return ret;
 }
 
+/*
+ * mountstat statistics are global, but maintenance threads are per-mount.
+ * To prevent threads from different mounts concurrently draining the hot
+ * layer into the cold (history) layer, so only one thread at a time acts
+ * as the maintainer (mntstat_owner); all others sleep on
+ * mntstat_maintain_cond until the owner exits and hands off.
+ */
+static pthread_mutex_t mntstat_maintain_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t mntstat_maintain_cond = PTHREAD_COND_INITIALIZER;
+static pfs_mount_t *mntstat_owner = NULL;
+
+#define MNTSTAT_MAINTAIN_INTERVAL_NS  (100 * 1000 * 1000L)  /* 100 ms */
+
 static void*
 pfs_mntstat_thread_entry(void *arg)
 {
-	int err;
 	pfs_mount_t *mnt = (pfs_mount_t *)arg;
 	struct timespec ts;
-	struct timeval now;
+	int err;
 
 	pfs_wait_inited(mnt);
 	if (pfs_init_failed(mnt))
 		return NULL;
-	pfs_itrace("Stat cleanup thread starts, interval = 1\n");
-	err = 0;
-	for (;;) {
-		clock_gettime(CLOCK_REALTIME, &ts);
-		ts.tv_sec += 1;
-		err = 0;
-		mutex_lock(&mnt->mnt_stat_mtx);
-		while (err == 0 && !mnt->mnt_stat_stop)
-			err = pthread_cond_timedwait(&mnt->mnt_stat_cond,
-			    &mnt->mnt_stat_mtx, &ts);
-		mutex_unlock(&mnt->mnt_stat_mtx);
+	pfs_itrace("Stat maintain thread starts, interval = 100ms\n");
 
+	mutex_lock(&mntstat_maintain_mtx);
+	for (;;) {
+		/* Wait until we can became owner. */
+		while (!mnt->mnt_stat_stop && mntstat_owner != NULL &&
+		    mntstat_owner != mnt)
+			cond_wait(&mntstat_maintain_cond,
+			    &mntstat_maintain_mtx);
+
+		if (mnt->mnt_stat_stop)
+			break;
+		mntstat_owner = mnt;
+
+		clock_gettime(CLOCK_REALTIME, &ts);
+		ts.tv_nsec += MNTSTAT_MAINTAIN_INTERVAL_NS;
+		if (ts.tv_nsec >= NSEC_PER_SEC) {
+			ts.tv_sec += ts.tv_nsec / NSEC_PER_SEC;
+			ts.tv_nsec %= NSEC_PER_SEC;
+		}
+
+		err = cond_timedwait(&mntstat_maintain_cond,
+		    &mntstat_maintain_mtx, &ts);
 		if (mnt->mnt_stat_stop)
 			break;
 
 		if (err && err != ETIMEDOUT) {
-			pfs_etrace("Stat cleanup thread wait error %d, %s\n",
+			pfs_etrace("Stat maintain thread wait error %d, %s\n",
 			    err, strerror(err));
 			continue;
 		}
-		//No matter whether pfs_mntstat_enable is true or false we need
-		//clean to avoid see old data.
-		gettimeofday(&now, NULL);
-		pfs_mntstat_sync(&now);
-		pfs_mntstat_reinit(&now);
+		/* maintenance is performed regardless of whether
+		 * pfs_mntstat_enable is enabled */
+		pfs_mntstat_maintain();
 	}
-	pfs_itrace("stat cleanup thread stops\n");
+
+	if (mntstat_owner == mnt) {
+		mntstat_owner = NULL;
+		cond_broadcast(&mntstat_maintain_cond);
+	}
+	mutex_unlock(&mntstat_maintain_mtx);
+
+	pfs_itrace("stat maintain thread stops\n");
 	return NULL;
 }
 
@@ -2560,10 +2584,10 @@ pfs_mntstat_stop(pfs_mount_t *mnt)
 {
 	int rv;
 	if (mnt->mnt_stat_tid) {
-		mutex_lock(&mnt->mnt_stat_mtx);
+		mutex_lock(&mntstat_maintain_mtx);
 		mnt->mnt_stat_stop = true;
-		cond_signal(&mnt->mnt_stat_cond);
-		mutex_unlock(&mnt->mnt_stat_mtx);
+		cond_broadcast(&mntstat_maintain_cond);
+		mutex_unlock(&mntstat_maintain_mtx);
 
 		rv = pthread_join(mnt->mnt_stat_tid, NULL);
 		PFS_VERIFY(rv == 0);

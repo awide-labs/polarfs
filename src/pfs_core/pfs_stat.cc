@@ -22,28 +22,53 @@
 #include "pfs_tls.h"
 #include "pfs_option.h"
 #include "pfs_config.h"
+#include "../ipc/pfs_align.h"
 
 static int64_t		mountstat_enable = PFS_OPT_DISABLE;
 PFS_OPTION_REG(mountstat_enable, pfs_check_ival_switch);
 
 #define MNT_STAT_SIZE (8 << 10)
 
-// Highest 44 bits represent the total time cost(us) and the reset 20 bits
-// represent the total count.
+/*
+ * mountstat uses two storage layers: hot and cold (historical).
+ *
+ * Hot layer (mount_stat_sharded[]): almost per-CPU. Each writer writes
+ * into its own shard via relaxed atomic fetch_add, with count and total
+ * latency packed into a single uint64_t cell
+ *
+ * Cold layer (mount_stat[], etc.): per-second history, stored in unpacked
+ * format. The maintenance thread drains the hot layer into the cold layer
+ * via atomic exchange (swap-to-zero) and unpacks each cell.
+ */
 typedef uint64_t pfs_mntstat_t;
+#define COUNT_SHIFT (24ull)
 
-#define COUNT_SHIFT (20ull)
-
-static pfs_mntstat_t mount_stat[MNT_STAT_SIZE][MNT_STAT_TYPE_COUNT];
-
-static pfs_mntstat_t mount_file_type_stat
-    [MNT_STAT_SIZE][MNT_STAT_FILE_SPEC_TYPE_COUNT][FILE_TYPE_COUNT];
+typedef struct {
+	uint64_t	hs_count;
+	uint64_t	hs_latency_us;
+} pfs_mntstat_hist_t;
 
 #define IO_TYPE 7
-static uint32_t mount_file_type_stat_iosize
+
+typedef struct pfs_mntstat_shard : pfsutil::cacheline_align_t {
+	pfs_mntstat_t	stat[MNT_STAT_TYPE_COUNT];
+	pfs_mntstat_t	file_type_stat
+	    [MNT_STAT_FILE_SPEC_TYPE_COUNT][FILE_TYPE_COUNT];
+	uint64_t	file_type_stat_iosize[IO_TYPE][FILE_TYPE_COUNT];
+} pfs_mntstat_shard_t;
+
+static pfs_mntstat_hist_t mount_stat[MNT_STAT_SIZE][MNT_STAT_TYPE_COUNT];
+static pfs_mntstat_hist_t mount_file_type_stat
+    [MNT_STAT_SIZE][MNT_STAT_FILE_SPEC_TYPE_COUNT][FILE_TYPE_COUNT];
+
+static uint64_t mount_file_type_stat_iosize
     [MNT_STAT_SIZE][IO_TYPE][FILE_TYPE_COUNT];
 
 static uint32_t mount_threads_stat[MNT_STAT_SIZE][MNT_STAT_TH_TYPE_COUNT];
+
+static pfs_mntstat_shard_t mount_stat_sharded[MNT_STAT_SHARDS];
+
+static int64_t mntstat_hist_sec = 0;
 
 static int mountstat_nthreads = 0;
 
@@ -155,6 +180,13 @@ pfs_mntstat_enable()
 	return (mountstat_enable == PFS_OPT_ENABLE);
 }
 
+static inline pfs_mntstat_shard_t *
+pfs_mntstat_shard(void)
+{
+	return &mount_stat_sharded[pfsutil::AccessSpreader::cachedCurrent(
+		MNT_STAT_SHARDS)];
+}
+
 void
 pfs_mntstat_prepare(struct timeval* stat_begin, int api_type)
 {
@@ -199,30 +231,27 @@ out:
 }
 
 static inline void
-pfs_stat_add(int64_t stat_time, int stat_type, uint64_t stat_latency)
-{
-	__atomic_fetch_add(&mount_stat[stat_time % MNT_STAT_SIZE][stat_type],
-	    (stat_latency << COUNT_SHIFT) | 1ull, __ATOMIC_RELAXED);
-}
-
-static inline void
-pfs_file_type_stat_add(int64_t stat_time, int stat_type, int file_type,
+pfs_stat_add(pfs_mntstat_shard_t *shard, int stat_type,
     uint64_t stat_latency)
 {
-	__atomic_fetch_add(
-	    &mount_file_type_stat
-	    [stat_time % MNT_STAT_SIZE][stat_type][file_type],
+	__atomic_fetch_add(&shard->stat[stat_type],
 	    (stat_latency << COUNT_SHIFT) | 1ull, __ATOMIC_RELAXED);
 }
 
 static inline void
-pfs_file_type_stat_add_iosize(int64_t stat_time, int io_type, int file_type,
-    uint32_t io_size)
+pfs_file_type_stat_add(pfs_mntstat_shard_t *shard, int stat_type,
+    int file_type, uint64_t stat_latency)
 {
-	__atomic_fetch_add(
-	    &mount_file_type_stat_iosize
-	    [stat_time % MNT_STAT_SIZE][io_type][file_type], io_size,
-	    __ATOMIC_RELAXED);
+	__atomic_fetch_add(&shard->file_type_stat[stat_type][file_type],
+	    (stat_latency << COUNT_SHIFT) | 1ull, __ATOMIC_RELAXED);
+}
+
+static inline void
+pfs_file_type_stat_add_iosize(pfs_mntstat_shard_t *shard, int io_type,
+    int file_type, uint32_t io_size)
+{
+	__atomic_fetch_add(&shard->file_type_stat_iosize[io_type][file_type],
+	    io_size, __ATOMIC_RELAXED);
 }
 
 static void
@@ -235,26 +264,26 @@ static void
 pfs_stat_get(int64_t stat_time, int stat_type, uint64_t *count,
     double *latency_avg)
 {
-	pfs_mntstat_t st;
-	st = mount_stat[stat_time % MNT_STAT_SIZE][stat_type];
-	*count = st & ((1 << COUNT_SHIFT) - 1);
+	pfs_mntstat_hist_t *st =
+	    &mount_stat[stat_time % MNT_STAT_SIZE][stat_type];
+	*count = st->hs_count;
 	if (*count == 0)
 		*latency_avg = 0.0;
 	else
-		*latency_avg = (st >> COUNT_SHIFT) / double(*count);
+		*latency_avg = st->hs_latency_us / double(*count);
 }
 
 static void
 pfs_file_type_stat_get(int64_t stat_time, int stat_type, int file_type,
     uint64_t *count, double *latency_avg)
 {
-	pfs_mntstat_t st =
-	    mount_file_type_stat[stat_time % MNT_STAT_SIZE][stat_type][file_type];
-	*count = st & ((1 << COUNT_SHIFT) - 1);
+	pfs_mntstat_hist_t *st =
+	    &mount_file_type_stat[stat_time % MNT_STAT_SIZE][stat_type][file_type];
+	*count = st->hs_count;
 	if (*count == 0)
 		*latency_avg = 0.0;
 	else
-		*latency_avg = (st >> COUNT_SHIFT) / double(*count);
+		*latency_avg = st->hs_latency_us / double(*count);
 }
 
 static void
@@ -269,7 +298,7 @@ pfs_file_type_stat_get_iosize(int64_t stat_time, int stat_type, int file_type,
 
 	io_type = stat_type;
 	*iosize = mount_file_type_stat_iosize[stat_time % MNT_STAT_SIZE]
-	    [io_type][file_type]/double(count);
+	    [io_type][file_type] / double(count);
 }
 
 void
@@ -278,42 +307,93 @@ pfs_mntstat_nthreads_change(int delta)
 	__atomic_fetch_add(&mountstat_nthreads, delta, __ATOMIC_RELAXED);
 }
 
-void
-pfs_mntstat_sync(struct timeval* stat_time)
+static void
+pfs_mntstat_cleanup_slot(int64_t sec)
 {
-	if (pfs_mntstat_enable())
-		__atomic_store_n(
-		    &mount_threads_stat
-		    [stat_time->tv_sec % MNT_STAT_SIZE][MNT_STAT_TH_NCOUNT],
-		    (uint32_t)mountstat_nthreads, __ATOMIC_RELAXED);
+	int64_t slot = sec % MNT_STAT_SIZE;
+
+	memset(mount_stat[slot], 0, sizeof(mount_stat[slot]));
+	memset(mount_file_type_stat[slot], 0,
+	    sizeof(mount_file_type_stat[slot]));
+	memset(mount_file_type_stat_iosize[slot], 0,
+	    sizeof(mount_file_type_stat_iosize[slot]));
+}
+
+static void
+pfs_mntstat_unpack_add(pfs_mntstat_hist_t *dst, uint64_t packed)
+{
+	dst->hs_count += packed & ((1ull << COUNT_SHIFT) - 1);
+	dst->hs_latency_us += packed >> COUNT_SHIFT;
 }
 
 void
-pfs_mntstat_reinit(struct timeval* stat_begin)
+pfs_mntstat_maintain(void)
 {
-	// This may lead some invalid result when we enable->disable->enable.
-	//if (!pfs_mntstat_enable())
-	//	return;
+	/* This function must complete within 1 second, otherwise
+	 * the statistics will be corrupted. */
+	struct timeval t0, t1;
 
-	//0 : current, 1 : safety_guard
-	memset(mount_stat[(stat_begin->tv_sec + 2) % MNT_STAT_SIZE], 0,
-	    sizeof(*mount_stat));
-	memset(mount_stat[(stat_begin->tv_sec + 3) % MNT_STAT_SIZE], 0,
-	    sizeof(*mount_stat));
-	memset(mount_file_type_stat[(stat_begin->tv_sec + 2) % MNT_STAT_SIZE],
-	    0, sizeof(*mount_file_type_stat));
-	memset(mount_file_type_stat[(stat_begin->tv_sec + 3) % MNT_STAT_SIZE],
-	    0, sizeof(*mount_file_type_stat));
-	memset(mount_file_type_stat_iosize
-	    [(stat_begin->tv_sec + 2) % MNT_STAT_SIZE], 0,
-	    sizeof(*mount_file_type_stat_iosize));
-	memset(mount_file_type_stat_iosize
-	    [(stat_begin->tv_sec + 3) % MNT_STAT_SIZE], 0,
-	    sizeof(*mount_file_type_stat_iosize));
-	memset(&mount_threads_stat[(stat_begin->tv_sec + 2) % MNT_STAT_SIZE],
-	    0, sizeof(*mount_threads_stat));
-	memset(&mount_threads_stat[(stat_begin->tv_sec + 3) % MNT_STAT_SIZE],
-	    0, sizeof(*mount_threads_stat));
+	pfs_mntstat_shard_t *shard;
+	int64_t sec, slot, duration;
+	int s, i, ft;
+	uint64_t v;
+
+	gettimeofday(&t0, NULL);
+	sec = t0.tv_sec;
+	slot = sec % MNT_STAT_SIZE;
+
+	if (mntstat_hist_sec != sec) {
+		pfs_mntstat_cleanup_slot(sec);
+
+		memset(&mount_threads_stat[(sec + 2) % MNT_STAT_SIZE], 0,
+		    sizeof(mount_threads_stat[0]));
+		memset(&mount_threads_stat[(sec + 3) % MNT_STAT_SIZE], 0,
+		    sizeof(mount_threads_stat[0]));
+
+		mntstat_hist_sec = sec;
+	}
+
+	for (s = 0; s < MNT_STAT_SHARDS; ++s) {
+		shard = &mount_stat_sharded[s];
+
+		for (i = 0; i < MNT_STAT_TYPE_COUNT; ++i) {
+			v = __atomic_exchange_n(&shard->stat[i], 0, __ATOMIC_RELAXED);
+
+			if (v != 0)
+				pfs_mntstat_unpack_add(&mount_stat[slot][i], v);
+		}
+
+		for (i = 0; i < MNT_STAT_FILE_SPEC_TYPE_COUNT; ++i) {
+			for (ft = 0; ft < FILE_TYPE_COUNT; ++ft) {
+				v = __atomic_exchange_n(
+				    &shard->file_type_stat[i][ft], 0, __ATOMIC_RELAXED);
+
+				if (v != 0)
+					pfs_mntstat_unpack_add(
+					    &mount_file_type_stat[slot][i][ft], v);
+			}
+		}
+
+		for (i = 0; i < IO_TYPE; ++i) {
+			for (ft = 0; ft < FILE_TYPE_COUNT; ++ft) {
+				v = __atomic_exchange_n(
+				    &shard->file_type_stat_iosize[i][ft], 0, __ATOMIC_RELAXED);
+
+				if (v != 0)
+					mount_file_type_stat_iosize[slot][i][ft] += v;
+			}
+		}
+	}
+
+	if (pfs_mntstat_enable())
+		__atomic_store_n(&mount_threads_stat[slot][MNT_STAT_TH_NCOUNT],
+		    (uint32_t)mountstat_nthreads, __ATOMIC_RELAXED);
+
+	gettimeofday(&t1, NULL);
+	duration = (t1.tv_sec - t0.tv_sec) * USEC_PER_SEC + (t1.tv_usec - t0.tv_usec);
+
+	if (duration >= USEC_PER_SEC)
+		pfs_etrace("WARNING: mountstat maintain took %ld us, exceeds 1s\n", duration);
 }
 
 void
@@ -321,11 +401,14 @@ pfs_mntstat_store(struct timeval* stat_begin, struct timeval* stat_end,
     int stat_type, bool file_type_spec, uint32_t io_size)
 {
 	struct timeval stat_end_data;
+	pfs_mntstat_shard_t *shard;
 	uint64_t stat_latency;
 	int file_type, io_type;
 
 	if (!pfs_mntstat_enable() || stat_begin->tv_sec == 0)
 		return;
+
+	shard = pfs_mntstat_shard();
 
 	if (!stat_end) {
 		stat_end = &stat_end_data;
@@ -334,7 +417,7 @@ pfs_mntstat_store(struct timeval* stat_begin, struct timeval* stat_end,
 	stat_latency = (stat_end->tv_sec - stat_begin->tv_sec) * 1000000 +
 	    stat_end->tv_usec - stat_begin->tv_usec;
 	if (!file_type_spec) {
-		pfs_stat_add(stat_end->tv_sec, stat_type, stat_latency);
+		pfs_stat_add(shard, stat_type, stat_latency);
 		if (stat_type == MNT_STAT_DEV_READ) {
 			stat_type = MNT_STAT_BACK_READ;
 			file_type_spec = true;
@@ -352,12 +435,12 @@ pfs_mntstat_store(struct timeval* stat_begin, struct timeval* stat_end,
 			return;
 		PFS_VERIFY(file_type < FILE_TYPE_COUNT);
 		PFS_VERIFY(stat_type < MNT_STAT_FILE_SPEC_TYPE_COUNT);
-		pfs_file_type_stat_add(stat_end->tv_sec, stat_type,
+		pfs_file_type_stat_add(shard, stat_type,
 		    file_type, stat_latency);
 		if (io_size != 0) {
 			PFS_ASSERT(stat_type < IO_TYPE);
 			io_type = stat_type;
-			pfs_file_type_stat_add_iosize(stat_end->tv_sec,
+			pfs_file_type_stat_add_iosize(shard,
 			    io_type, file_type, io_size);
 		}
 	}

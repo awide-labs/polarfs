@@ -47,7 +47,7 @@ CMD_NAMECACHE_STAT = 21
 
 IO_READ         = 2
 IO_WRITE        = 3
-IO_NTYPES       = 5
+IO_NTYPES       = 6
 
 def delta2usec(delta):
     """convert a timedelta into microseconds
@@ -393,8 +393,8 @@ class DevStat(object):
     uint64_t        ds_ops[PFSDEV_REQ_MAX];
     struct timeval  ds_duration[PFSDEV_REQ_MAX];
     """
-    field_tuple = ('448s', '64s', 'i', 'i', 'Q', 'Q', 'QQ',  'Q'*5,
-        'Q'*5, 'QQ'*5)
+    field_tuple = ('448s', '64s', 'i', 'i', 'Q', 'Q', 'QQ',  'Q'*IO_NTYPES,
+        'Q'*IO_NTYPES, 'QQ'*IO_NTYPES)
 
     def __init__(self):
         self.cluster_name = ''
@@ -488,6 +488,18 @@ class AdminIostat(AdminOperation):
         rdur, wdur = iostats[IO_READ].duration, iostats[IO_WRITE].duration
         acount = rcount + wcount
         adur = rdur + wdur
+        # The busy_time algorithm (ported from Linux update_io_ticks) has a
+        # known race: when two IOs start concurrently right after a long idle
+        # period, the entire idle gap can be counted as busy time, and that
+        # gap can be arbitrarily large (seconds of idle charged as busy).
+        # Since busy_time is physically bounded by the sum of all IO
+        # durations (overlapping IOs count once in busy_time but separately
+        # in the per-op duration sum), we clamp busy to total_io_time and
+        # cap the result at 100%.
+        busy_us = delta2usec(busydur)
+        total_io_us = sum(delta2usec(iostats[i].duration) for i in range(IO_NTYPES))
+        util = min(self.normalize(min(busy_us, total_io_us)) / 10000, 100.0)
+
         print ( '%-15s %7d %7d %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f' % (
             stat.device_name.decode('ascii'),
             int(self.normalize(rcount)) if rcount > 0 else 0,
@@ -499,7 +511,7 @@ class AdminIostat(AdminOperation):
             0.0,
             float(delta2usec(adur)) / acount if acount > 0 else 0.0,
             self.normalize(qlen),
-            self.normalize(delta2usec(busydur)) / 10000) )
+            util) )
 
     def handle_reply_payload(self, reply):
         fmts = ''.join(self.stathdrfmt_tuple)
