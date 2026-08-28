@@ -16,8 +16,10 @@
 #ifndef PFS_MOUNTSTAT_H
 #define PFS_MOUNTSTAT_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include "pfs_stat_file_type.h"
+#include "../ipc/access_spreader.h"
 
 enum {
 	MNT_STAT_BASE = -1,
@@ -98,6 +100,10 @@ enum {
 	MNT_STAT_TH_TYPE_COUNT
 };
 
+static constexpr size_t MNT_STAT_SHARDS = pfsutil::AccessSpreader::kMaxCpus;
+static_assert(MNT_STAT_SHARDS <= pfsutil::AccessSpreader::kMaxCpus,
+    "MNT_STAT_SHARDS must not exceed the AccessSpreader::cachedCurrent retval");
+
 struct timeval;
 typedef struct admin_buf admin_buf_t;
 
@@ -106,8 +112,7 @@ void pfs_mntstat_prepare(struct timeval* stat_begin, int api_type);
 void pfs_mntstat_set_file_type(int file_type);
 void pfs_mntstat_store(struct timeval* stat_begin, struct timeval* stat_end,
     int stat_type, bool file_type_spec, uint32_t size);
-void pfs_mntstat_reinit(struct timeval* stat_time);
-void pfs_mntstat_sync(struct timeval* stat_time);
+void pfs_mntstat_maintain(void);
 void pfs_mntstat_clear();
 
 void pfs_mntstat_nthreads_change(int delta);

@@ -153,6 +153,12 @@ if ! bash test/pfsadm-test.sh; then
     TEST_FAILED=1
 fi
 
+echo "Running pfsd_stat_test..."
+if ! ./bin/pfsd_stat_test 20 "disk" "$TEST_LOOP_DEVICE_NAME"; then
+    echo "ERROR: pfsd_stat_test failed"
+    TEST_FAILED=1
+fi
+
 if [[ $TEST_FAILED -ne 0 ]]; then
     echo "=== ONE OR MORE TESTS FAILED ==="
     exit 1

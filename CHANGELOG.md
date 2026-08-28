@@ -28,6 +28,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   tracking code existed but the allocation paths bypassed it. All client
   allocations are now tracked (XCOM-188)
 
+### Performance
+
+- `devstat` and `mountstat` statistics modules significantly slowed down
+  PolarFS, as `devstat` used a global lock and `mountstat` used shared
+  counters. These modules are now sharded, reducing contention
+  (XCOM-196)
+
 ## [3.0.1] - 2026-09-01
 
 ### Fixed

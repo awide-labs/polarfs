@@ -88,6 +88,7 @@ typedef struct pfs_devio {
 	int32_t		io_error;
 	int		io_flags;
 	struct timeval	io_start_ts;
+	uint32_t	io_stat_cpu;	/* CPU / shard pinned at io_start for devstat */
 	void		*io_private;
 	struct iocb	io_iocb;
 } pfs_devio_t;

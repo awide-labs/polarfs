@@ -73,7 +73,7 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 
 	case PFSD_REQUEST_READ: {
 		MNT_STAT_API_BEGIN(MNT_STAT_API_PREAD);
-		pfs_mntstat_set_file_type(r->file_type);
+		pfs_mntstat_set_file_type(r->req.common.common_pl_req.pl_file_type);
 		pfsd_worker_handle_read(server, connId, r, &r->req.r_req,
 					&r->rsp.r_rsp);
 		MNT_STAT_API_END_BANDWIDTH(MNT_STAT_API_PREAD,
@@ -83,7 +83,7 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 
 	case PFSD_REQUEST_WRITE: {
 		MNT_STAT_API_BEGIN(MNT_STAT_API_PWRITE);
-		pfs_mntstat_set_file_type(r->file_type);
+		pfs_mntstat_set_file_type(r->req.common.common_pl_req.pl_file_type);
 		pfsd_worker_handle_write(server, connId, r, &r->req.w_req,
 					 &r->rsp.w_rsp);
 		MNT_STAT_API_END_BANDWIDTH(MNT_STAT_API_PWRITE,
@@ -101,7 +101,7 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 
 	case PFSD_REQUEST_FTRUNCATE: {
 		MNT_STAT_API_BEGIN(MNT_STAT_API_FTRUNCATE);
-		pfs_mntstat_set_file_type(r->file_type);
+		pfs_mntstat_set_file_type(r->req.common.common_pl_req.pl_file_type);
 		pfsd_worker_handle_ftruncate(server, connId, r, &r->req.ft_req,
 					     &r->rsp.ft_rsp);
 		MNT_STAT_API_END(MNT_STAT_API_FTRUNCATE);
@@ -123,7 +123,7 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 
 	case PFSD_REQUEST_FSTAT: {
 		MNT_STAT_API_BEGIN(MNT_STAT_API_FSTAT);
-		pfs_mntstat_set_file_type(r->file_type);
+		pfs_mntstat_set_file_type(r->req.common.common_pl_req.pl_file_type);
 		pfsd_worker_handle_fstat(server, connId, r, &r->req.f_req,
 					 &r->rsp.f_rsp);
 		MNT_STAT_API_END(MNT_STAT_API_FSTAT);
@@ -132,7 +132,7 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 
 	case PFSD_REQUEST_FALLOCATE: {
 		MNT_STAT_API_BEGIN(MNT_STAT_API_FALLOCATE);
-		pfs_mntstat_set_file_type(r->file_type);
+		pfs_mntstat_set_file_type(r->req.common.common_pl_req.pl_file_type);
 		pfsd_worker_handle_fallocate(server, connId, r, &r->req.fa_req,
 					     &r->rsp.fa_rsp);
 		MNT_STAT_API_END(MNT_STAT_API_FALLOCATE);
@@ -171,7 +171,7 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 
 	case PFSD_REQUEST_LSEEK: {
 		MNT_STAT_API_BEGIN(MNT_STAT_API_LSEEK);
-		pfs_mntstat_set_file_type(r->file_type);
+		pfs_mntstat_set_file_type(r->req.common.common_pl_req.pl_file_type);
 		pfsd_worker_handle_lseek(server, connId, r, &r->req.l_req,
 					 &r->rsp.l_rsp);
 		MNT_STAT_API_END(MNT_STAT_API_LSEEK);
@@ -180,6 +180,7 @@ pfsd_worker_handle_request(ipc::Server *server, uint64_t connId,
 
 	case PFSD_REQUEST_FSYNC: {
 		MNT_STAT_API_BEGIN(MNT_STAT_API_FSYNC);
+		pfs_mntstat_set_file_type(r->req.common.common_pl_req.pl_file_type);
 		pfsd_worker_handle_fsync(server, connId, r, &r->req.fc_req,
 					 &r->rsp.fc_rsp);
 		MNT_STAT_API_END(MNT_STAT_API_FSYNC);

@@ -27,6 +27,7 @@
 #include "pfs_trace.h"
 #include "pfs_stat.h"
 #include "pfs_config.h"
+#include "../ipc/access_spreader.h"
 
 uint64_t		pfs_devs_epoch;
 pfs_dev_t		*pfs_devs[PFS_MAX_NCHD];
@@ -266,6 +267,10 @@ pfs_io_start(pfs_devio_t *io)
 	err = gettimeofday(&io->io_start_ts, NULL);
 	PFS_VERIFY(err == 0);
 
+	if (io->io_flags & IO_STAT) {
+		io->io_stat_cpu = pfsutil::AccessSpreader::cachedCurrent(
+			PFS_DEVSTAT_SHARDS);
+	}
 	pfs_devstat_io_start(&io->io_dev->d_ds, io);
 
 	switch (io->io_op) {

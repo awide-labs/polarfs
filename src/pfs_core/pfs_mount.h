@@ -135,8 +135,6 @@ typedef struct pfs_mount {
 	pthread_t	mnt_discard_tid;
 	int		mnt_discard_stop;
 
-	pthread_mutex_t	mnt_stat_mtx;
-	pthread_cond_t	mnt_stat_cond;
 	pthread_t	mnt_stat_tid;
 	int		mnt_stat_stop;
 } pfs_mount_t;

@@ -116,6 +116,17 @@ target_link_libraries(pfsd_ebusy_test
     pfsd
 )
 
+add_executable(pfsd_stat_test
+    pfsd_testenv.cc
+    pfsd_unittest.cc
+    pfsd_stat_test.cc
+)
+
+target_link_libraries(pfsd_stat_test
+    pfsd
+    gtest
+)
+
 add_executable(pfs_inode_lru_test
     pfs_inode_lru_test.cc
 )

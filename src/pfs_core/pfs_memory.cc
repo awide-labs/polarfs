@@ -84,6 +84,7 @@ static pfs_memtype_t	pfs_mem_type[] = {
 	MEMTYPE_ENTRY(M_CONFIG_KV),
 	MEMTYPE_ENTRY(M_FDTBL_PTR),
 	MEMTYPE_ENTRY(M_INODE_BLK_TABLE),
+	MEMTYPE_ENTRY(M_DEVSTAT),
 };
 static_assert(sizeof(pfs_mem_type) / sizeof(pfs_mem_type[0]) == M_NTYPE,
     "pfs_mem_type must cover every M_* type");

@@ -16,6 +16,7 @@
 #ifndef	_PFS_UTIL_H_
 #define	_PFS_UTIL_H_
 
+#include <sys/time.h>
 #include <sys/types.h>
 #include <stdint.h>
 
@@ -24,6 +25,19 @@ uint64_t	roundup_power2(uint64_t val);
 int		strncpy_safe(char *dst, const char *src, size_t n);
 uint32_t	crc32c_compute(const void *buf, size_t size, size_t offset);
 uint64_t	gettimeofday_us();
+
+static inline int64_t
+pfs_timeval_to_us(const struct timeval *tv)
+{
+	return ((int64_t)tv->tv_sec * 1000000 + (int64_t)tv->tv_usec);
+}
+
+static inline void
+pfs_us_to_timeval(int64_t us, struct timeval *tv)
+{
+	tv->tv_sec = (time_t)(us / 1000000);
+	tv->tv_usec = (suseconds_t)(us % 1000000);
+}
 
 #define	DATA_SET_ATTR(set)	 	\
        	__attribute__((used)) 		\
