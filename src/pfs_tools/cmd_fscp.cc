@@ -23,7 +23,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <malloc.h>
 
 #include "cmd_impl.h"
 #include "pfs_api.h"
@@ -826,21 +825,6 @@ cmd_fscp(int argc, char *argv[], cmd_opts_t *co)
 	if (argc < 2) {
 		usage_fscp();
 		return -1;
-	}
-
-	/*
-	 * PFSTool's memory does't shrink after umount. According to glibc
-	 * malloc, heap can be trimmed only if memory is freed at the top
-	 * end. Objects of mount are at the bottom of heap and oidvectors
-	 * are at the top. So even umount is done, the free memory of those
-	 * objects can't be given back to system.
-	 *
-	 * There are lots of 4KB memory allocations during mount, so adjust
-	 * malloc option M_MMAP_THRESHOLD to 4KB.
-	 */
-	err = mallopt(M_MMAP_THRESHOLD, 4096);
-	if (err != 1) {
-		pfs_etrace("set M_MMAP_THRESHOLD to 4096 failed, err = %d\n", err);
 	}
 
 	fscpinfo_init(&cpinfo, argv[0], argv[1], co_fscp);
