@@ -8,6 +8,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `fscp` no longer aborts with a spurious CRC error when copying a file
+  whose last block holds only a few bytes of data — the data was
+  intact, but the CRC helper could not handle blocks that short. The
+  check now also really covers the first bytes of every block, which
+  were skipped before (XCOM-183)
+
 ## [3.0.0] - 2026-07-14
 
 ### Changed

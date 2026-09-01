@@ -390,8 +390,10 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 			crc_len = (uint32_t)holeoff > PFS_BLOCK_SIZE ?
 			    PFS_BLOCK_SIZE : holeoff;
 
-			uint32_t src_crc = crc32c_compute(src_iobuf, crc_len, 0);
-			uint32_t dst_crc = crc32c_compute(dst_iobuf, crc_len, 0);
+			uint32_t src_crc = crc32c((uint32_t)~1, src_iobuf,
+			    crc_len);
+			uint32_t dst_crc = crc32c((uint32_t)~1, dst_iobuf,
+			    crc_len);
 
 			if (src_crc != dst_crc) {
 				pfs_etrace("crc check failed! src_crc=%u, dst_crc=%u,\
