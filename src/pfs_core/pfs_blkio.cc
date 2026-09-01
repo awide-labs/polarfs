@@ -171,9 +171,10 @@ pfs_blkio_execute(pfs_mount_t *mnt, char *data, pfs_blkno_t blkno,
 		albda = pfs_blkio_align(mnt, bda, left, &allen, &iolen);
 
 		if (allen != iolen && albuf == NULL) {
-			albuf = (char *)pfs_mem_malloc(PFS_FRAG_SIZE,
-			    M_IO_TMPBUF);
-			PFS_VERIFY(albuf != NULL);
+			/* DIO-aligned to avoid bounce buffering in devio */
+			err = pfs_mem_memalign((void **)&albuf, PBD_SECTOR_SIZE,
+			    PFS_FRAG_SIZE, M_IO_TMPBUF);
+			PFS_VERIFY(err == 0 && albuf != NULL);
 		}
 
 		err = (*iofunc)(mnt->mnt_ioch_desc, albda, allen, albuf, bda,

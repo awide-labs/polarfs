@@ -16,6 +16,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   check now also really covers the first bytes of every block, which
   were skipped before (XCOM-183)
 
+### Performance
+
+- `fscp` copied far slower than it could (observed capped at ~400MB/s
+  with 32 workers) because its buffers were not aligned for direct I/O:
+  every block bounced through an extra copy, and every bounce's
+  malloc/free became an mmap/munmap cycle due to the low mmap threshold,
+  all serialized on a single process-wide lock. Buffers are now aligned
+  and handed to the device directly (XCOM-184)
+
 ## [3.0.0] - 2026-07-14
 
 ### Changed

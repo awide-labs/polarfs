@@ -316,8 +316,17 @@ chunk_copy(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 	void *iobuf;
 	int32_t holeoff;
 
-	iobuf = malloc(PFS_FRAG_SIZE * cpinfo->i_nfrag);
-	PFS_ASSERT(iobuf != NULL);
+	/*
+	 * The devio layer opens devices O_DIRECT and bounces every I/O
+	 * whose buffer isn't sector-aligned through a per-I/O
+	 * memalign'ed diobuf plus an extra memcpy. malloc() only
+	 * guarantees 16-byte alignment (its chunk header misaligns even
+	 * mmap'd blocks), so align the iobuf ourselves and let every
+	 * frag be submitted directly.
+	 */
+	err = pfs_mem_memalign(&iobuf, PBD_SECTOR_SIZE,
+	    PFS_FRAG_SIZE * cpinfo->i_nfrag, M_IO_TMPBUF);
+	PFS_ASSERT(err == 0);
 
 	for (i = oidvect_begin(pov); i < oidvect_end(pov); i++) {
 		oid = oidvect_get(pov, i);
@@ -328,11 +337,11 @@ chunk_copy(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 		if (err < 0) {
 			pfs_etrace("copy %lld blk in chunk %d failed, err=%d\n",
 			    blkno, ckid, err);
-			free(iobuf);
+			pfs_mem_free(iobuf, M_IO_TMPBUF);
 			return err;
 		}
 	}
-	free(iobuf);
+	pfs_mem_free(iobuf, M_IO_TMPBUF);
 
 	__sync_add_and_fetch(&cpinfo->i_nckcopy, 1);
 	printf("%lu blocks have been copied, %ld chunks are done\r",
@@ -358,10 +367,11 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 	int32_t i, j, err, nfrag, fragperblk, crc_len;
 	pfs_bda_t fragbda;
 
-	src_iobuf = malloc(PFS_BLOCK_SIZE);
-	dst_iobuf = malloc(PFS_BLOCK_SIZE);
-	PFS_ASSERT(src_iobuf != NULL);
-	PFS_ASSERT(dst_iobuf != NULL);
+	/* sector-aligned for O_DIRECT, see chunk_copy() */
+	err = pfs_mem_memalign(&src_iobuf, PBD_SECTOR_SIZE, PFS_BLOCK_SIZE, M_IO_TMPBUF);
+	PFS_ASSERT(err == 0);
+	err = pfs_mem_memalign(&dst_iobuf, PBD_SECTOR_SIZE, PFS_BLOCK_SIZE, M_IO_TMPBUF);
+	PFS_ASSERT(err == 0);
 
 	err = 0;
 	fragperblk = PFS_BLOCK_SIZE / PFS_FRAG_SIZE;
@@ -408,9 +418,9 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 	}
 
 out:
-	free(src_iobuf);
+	pfs_mem_free(src_iobuf, M_IO_TMPBUF);
 	src_iobuf = NULL;
-	free(dst_iobuf);
+	pfs_mem_free(dst_iobuf, M_IO_TMPBUF);
 	dst_iobuf = NULL;
 	return err;
 }

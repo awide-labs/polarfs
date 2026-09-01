@@ -868,8 +868,10 @@ pfs_meta_load_chunk(pfs_mount_t *mnt, uint32_t ckid)
 	pfs_chunk_phy_t *phyck;
 
 	PFS_ASSERT(mnt->mnt_nchunk >= 0 && ckid < (uint32_t)mnt->mnt_nchunk);
-	phyck = (pfs_chunk_phy_t *)pfs_mem_malloc(PBD_SECTOR_SIZE, M_SECTOR);
-	if (phyck == NULL)
+	/* DIO-aligned to avoid bounce buffering in the devio layer */
+	err = pfs_mem_memalign((void **)&phyck, PBD_SECTOR_SIZE,
+	    PBD_SECTOR_SIZE, M_SECTOR);
+	if (err != 0)
 		ERR_RETVAL(ENOMEM);
 	err = pfsdev_pread(mnt->mnt_ioch_desc, phyck, PBD_SECTOR_SIZE,
 	    ckid * PBD_CHUNK_SIZE);
