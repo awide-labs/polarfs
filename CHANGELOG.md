@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-09-01
+
 ### Fixed
 
 - `fscp` no longer aborts with a spurious CRC error when copying a file
@@ -233,7 +235,8 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/awide-labs/polarfs/compare/v3.0.0..master
+[unreleased]: https://github.com/awide-labs/polarfs/compare/v3.0.1..master
+[3.0.1]: https://github.com/awide-labs/polarfs/compare/v3.0.0..v3.0.1
 [3.0.0]: https://github.com/awide-labs/polarfs/compare/v2.2.0..v3.0.0
 [2.2.0]: https://github.com/awide-labs/polarfs/compare/v2.1.10..v2.2.0
 [2.1.10]: https://github.com/awide-labs/polarfs/compare/v2.1.9..v2.1.10
