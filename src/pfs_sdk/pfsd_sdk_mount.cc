@@ -108,7 +108,7 @@ pfs_mount_prepare(const char *cluster, const char *pbdname, int host_id,
 		return NULL;
 	}
 
-	result = PFSD_MALLOC(mountargs_t);
+	result = PFSD_MALLOC(mountargs_t, MD_MOUNTARG);
 	if (result == NULL) {
 		errno = ENOMEM;
 		return NULL;
@@ -169,7 +169,7 @@ pfs_mount_prepare(const char *cluster, const char *pbdname, int host_id,
 err_handle:
 	pfsd_paxos_hostid_local_unlock(result->hostid_lock_fd);
 	pfsd_paxos_hostid_local_unlock(result->meta_lock_fd);
-	PFSD_FREE(result);
+	PFSD_FREE(result, MD_MOUNTARG);
 	if (errno == 0)
 		errno = EINVAL;
 	PFSD_CLIENT_ELOG("pfs_mount_prepare failed for %s hostid %d, err %s",
@@ -186,7 +186,7 @@ pfs_mount_atfork_child(void* handle)
 		 * Here we leak a fd to avoid mkfs operation
 		 */
 		//pfsd_paxos_hostid_local_unlock(result->hostid_lock_fd);
-		PFSD_FREE(result);
+		PFSD_FREE(result, MD_MOUNTARG);
 		result = NULL;
 	}
 }
@@ -203,7 +203,7 @@ pfs_mount_post(void *handle, int err)
 
 	if (err < 0) {
 		pfsd_paxos_hostid_local_unlock(result->hostid_lock_fd);
-		PFSD_FREE(result);
+		PFSD_FREE(result, MD_MOUNTARG);
 	}
 	PFSD_CLIENT_LOG("pfs_mount_post err : %d", err);
 }
@@ -227,7 +227,7 @@ pfs_remount_prepare(const char *cluster, const char *pbdname, int host_id,
 	}
 	PFSD_CLIENT_LOG("remount cluster(%s), PBD(%s), hostid(%d),flags(%#x)",
 	    cluster, pbdname, host_id, flags);
-	result = PFSD_MALLOC(mountargs_t);
+	result = PFSD_MALLOC(mountargs_t, MD_MOUNTARG);
 	if (result == NULL) {
 		errno = ENOMEM;
 		return NULL;
@@ -243,7 +243,7 @@ pfs_remount_prepare(const char *cluster, const char *pbdname, int host_id,
 	return result;
 err_handle:
 	pfsd_paxos_hostid_local_unlock(result->hostid_lock_fd);
-	PFSD_FREE(result);
+	PFSD_FREE(result, MD_MOUNTARG);
 	return NULL;
 }
 
@@ -254,7 +254,7 @@ pfs_remount_post(void *handle, int err)
 	if(err < 0) {
 		PFSD_CLIENT_ELOG("remount failed %d", err);
 		pfsd_paxos_hostid_local_unlock(result->hostid_lock_fd);
-		PFSD_FREE(result);
+		PFSD_FREE(result, MD_MOUNTARG);
 	}
 }
 
@@ -276,8 +276,16 @@ pfs_umount_post(const char *pbdname, void *handle)
 	assert (result->meta_lock_fd < 0);
 
 	pfsd_paxos_hostid_local_unlock(result->hostid_lock_fd);
-	PFSD_FREE(result);
+	PFSD_FREE(result, MD_MOUNTARG);
 	pfsd_file_cleanup();
+
+	/* P4-a: dump the client-side memory-accounting table at umount so a
+	 * leaked pfsd_file_t / pfsd_dirstream_t / mountargs_t becomes visible
+	 * in the SDK log (alloc != free reads like a leak). */
+	char memstat_buf[4096];
+	if (pfsd_mem_stat(memstat_buf, sizeof(memstat_buf)) == 0)
+		PFSD_CLIENT_LOG("memory accounting:\n%s", memstat_buf);
+
 	PFSD_CLIENT_LOG("pfs_umount_post. pbdname:%s", pbdname);
 }
 

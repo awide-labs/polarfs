@@ -11,11 +11,15 @@
  */
 #pragma once
 
+#include <sys/types.h>
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include "pfs_align.h"
 
 namespace pfsutil {
 
@@ -111,6 +115,84 @@ private:
   };
 
   static CpuCache& cpuCache();
+};
+
+// A sharded, cache-line-aligned allocation/free counter. One instance tracks a
+// single memory type; the shards spread concurrent inc/dec across cache lines
+// so the per-allocation accounting cost stays flat as the thread count grows.
+//
+// The stripe for a thread is chosen by AccessSpreader::cachedCurrent() (CPU
+// locality aware), NOT by hashing the thread id. The previous hand-rolled
+// index (pthread_self() % kShards) collapsed to 0 on glibc/x86-64 because the
+// thread descriptor is 64-byte aligned; AccessSpreader has no such degenerate
+// case and is ~5x cheaper than a raw getcpu.
+template <size_t kShards = 64>
+struct MemCounters {
+  // One Cell is exactly one cache line: the atomics plus the alignment
+  // inherited from cacheline_align_t (alignas(kCachelineSize)). The two
+  // static_asserts below make any future edit that breaks alignment a
+  // compile-time error rather than a silent false-sharing regression.
+  struct Cell : cacheline_align_t {
+    std::atomic<ssize_t> bytes_alloc{0};
+    std::atomic<ssize_t> bytes_free{0};
+    std::atomic<int64_t> count_alloc{0};
+    std::atomic<int64_t> count_free{0};
+  };
+
+  static_assert(sizeof(Cell) == kCachelineSize,
+      "MemCounters::Cell must be exactly one cache line");
+  static_assert(alignof(Cell) == kCachelineSize,
+      "MemCounters::Cell must be cache-line aligned");
+
+  // Folded totals across all shards, for the memstat readout.
+  struct Totals {
+    ssize_t bytes_alloc = 0;
+    ssize_t bytes_free = 0;
+    int64_t count_alloc = 0;
+    int64_t count_free = 0;
+  };
+
+  Cell cells[kShards];
+
+  void inc(size_t bytes, int64_t count)
+  {
+    Cell& c = cells[AccessSpreader::cachedCurrent(kShards)];
+    c.bytes_alloc.fetch_add(static_cast<ssize_t>(bytes),
+        std::memory_order_relaxed);
+    c.count_alloc.fetch_add(count, std::memory_order_relaxed);
+  }
+
+  void dec(size_t bytes)
+  {
+    Cell& c = cells[AccessSpreader::cachedCurrent(kShards)];
+    c.bytes_free.fetch_add(static_cast<ssize_t>(bytes),
+        std::memory_order_relaxed);
+    c.count_free.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  Totals sum() const
+  {
+    Totals t;
+    for (size_t s = 0; s < kShards; s++) {
+      t.bytes_alloc += cells[s].bytes_alloc.load(std::memory_order_relaxed);
+      t.bytes_free += cells[s].bytes_free.load(std::memory_order_relaxed);
+      t.count_alloc += cells[s].count_alloc.load(std::memory_order_relaxed);
+      t.count_free += cells[s].count_free.load(std::memory_order_relaxed);
+    }
+    return t;
+  }
+
+  // Number of shards that have ever been touched (allocated or freed).
+  size_t shards_in_use() const
+  {
+    size_t n = 0;
+    for (size_t s = 0; s < kShards; s++) {
+      if (cells[s].count_alloc.load(std::memory_order_relaxed) != 0 ||
+          cells[s].count_free.load(std::memory_order_relaxed) != 0)
+        ++n;
+    }
+    return n;
+  }
 };
 
 } // namespace pfsutil

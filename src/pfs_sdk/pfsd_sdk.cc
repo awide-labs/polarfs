@@ -414,7 +414,7 @@ pfsd_remount(const char *cluster, const char *pbdname, int hostid, int flags)
 
 	if (client->remount(cluster, hostid, flags, s_remount_timeout_ms) == 0) {
 		s_mnt_flags = flags;
-		free(s_mount_local_info);
+		PFSD_FREE(s_mount_local_info, MD_MOUNTARG);
 		s_mount_local_info = mp;
 	} else {
 		goto failed;
@@ -1631,11 +1631,10 @@ pfsd_opendir(const char *pbdpath)
 		errno = req->rsp.od_rsp.error;
 		PFSD_CLIENT_ELOG("opendir %s error: %s", pbdpath, strerror(errno));
 	} else {
-		dir = PFSD_MALLOC(pfsd_dirstream_t);
+		dir = PFSD_CALLOC(pfsd_dirstream_t, MD_DIR);
 		if (dir == NULL) {
 			errno = ENOMEM;
 		} else {
-			memset(dir, 0, sizeof(*dir));
 			dir->d_ino = req->rsp.od_rsp.o_dino;
 			dir->d_next_ino = req->rsp.od_rsp.o_first_ino;
 		}
@@ -1764,7 +1763,7 @@ pfsd_closedir(DIR *dir)
 		return -1;
 	}
 
-	PFSD_FREE(raw);
+	PFSD_FREE(raw, MD_DIR);
 	return 0;
 }
 

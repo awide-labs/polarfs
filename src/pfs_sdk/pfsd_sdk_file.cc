@@ -102,11 +102,10 @@ void pfsd_sdk_file_destroy()
 pfsd_file_t *
 pfsd_alloc_file()
 {
-	pfsd_file_t *f = PFSD_MALLOC(pfsd_file_t);
+	pfsd_file_t *f = PFSD_CALLOC(pfsd_file_t, MD_FILE);
 	if (f == NULL)
 		return NULL;
 
-	memset(f, 0, sizeof(pfsd_file_t));
 	pthread_rwlock_init(&f->f_rwlock, NULL);
 	f->f_fd = -1;
 	f->f_inode = -1;
@@ -118,7 +117,7 @@ pfsd_free_file(pfsd_file_t *f)
 {
 	if (f) {
 		pthread_rwlock_destroy(&f->f_rwlock);
-		PFSD_FREE(f);
+		PFSD_FREE(f, MD_FILE);
 	}
 }
 
@@ -354,7 +353,7 @@ pfsd_normalize_path(char *pbdpath)
 	size_t maxnamelen = PFS_MAX_NAMELEN;
 	char *dirs[PFS_MAX_PATHLEN];
 	int ndirs = 0;
-	char *tmp = strdup(pbdpath);
+	char *tmp = pfsd_mem_strdup(pbdpath, MD_PATH);
 
 	for (path = tmp; ; path = NULL) {
 		name = strtok_r(path, "/", &savedptr);
@@ -397,7 +396,7 @@ pfsd_normalize_path(char *pbdpath)
 		}
 	}
 
-	free(tmp);
+	pfsd_mem_free(tmp, MD_PATH);
 	return err;
 }
 
