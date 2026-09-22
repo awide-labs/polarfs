@@ -123,3 +123,13 @@ add_executable(pfs_inode_lru_test
 target_link_libraries(pfs_inode_lru_test
     pfs
 )
+
+add_executable(pfsd_memcounter_test
+    pfsd_memcounter_test.cc
+)
+
+target_link_libraries(pfsd_memcounter_test
+    pfsd
+    gtest_main
+    gtest
+)

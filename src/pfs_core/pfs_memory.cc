@@ -13,7 +13,6 @@
  * limitations under the License.
  */
 
-#include <atomic>
 #include <sys/queue.h>
 
 #include <malloc.h>
@@ -22,22 +21,15 @@
 #include "pfs_impl.h"
 #include "pfs_admin.h"
 
-constexpr size_t MEMCOUNTER_SHARDS = 64;
-thread_local int tls_memcounter_idx = pthread_self() % MEMCOUNTER_SHARDS;
+#include "../ipc/access_spreader.h"
 
 typedef struct pfs_memtype {
-	const char 	*mt_name;
-	struct {
-		std::atomic<ssize_t>		mt_bytes_alloc;
-		std::atomic<ssize_t>		mt_bytes_free;
-		std::atomic<int64_t>		mt_count_alloc;
-		std::atomic<int64_t>		mt_count_free;
-		char		mt_padding[64 - sizeof(ssize_t) * 2 - sizeof(int64_t) * 2];
-	} counters[MEMCOUNTER_SHARDS];
+	const char 		*mt_name;
+	pfsutil::MemCounters<>	counters;
 } pfs_memtype_t;
 
-#define	MEMTYPE_ENTRY(tag)	[tag] = { #tag, }
-static pfs_memtype_t	pfs_mem_type[M_NTYPE] = {
+#define	MEMTYPE_ENTRY(tag)	{ #tag, }
+static pfs_memtype_t	pfs_mem_type[] = {
 	MEMTYPE_ENTRY(M_NONE),
 	MEMTYPE_ENTRY(M_SECTOR),
 	MEMTYPE_ENTRY(M_FRAG),
@@ -93,6 +85,8 @@ static pfs_memtype_t	pfs_mem_type[M_NTYPE] = {
 	MEMTYPE_ENTRY(M_FDTBL_PTR),
 	MEMTYPE_ENTRY(M_INODE_BLK_TABLE),
 };
+static_assert(sizeof(pfs_mem_type) / sizeof(pfs_mem_type[0]) == M_NTYPE,
+    "pfs_mem_type must cover every M_* type");
 
 static inline const char *
 memtype_name(int type)
@@ -105,9 +99,7 @@ memtype_inc(int type, int count, size_t size)
 {
 	PFS_ASSERT(0 < type && type < M_NTYPE);
 
-	auto &cell = pfs_mem_type[type].counters[tls_memcounter_idx];
-	cell.mt_bytes_alloc.fetch_add(size, std::memory_order_relaxed);
-	cell.mt_count_alloc.fetch_add(count, std::memory_order_relaxed);
+	pfs_mem_type[type].counters.inc(size, count);
 }
 
 static void
@@ -115,9 +107,7 @@ memtype_dec(int type, size_t size)
 {
 	PFS_ASSERT(0 < type && type < M_NTYPE);
 
-	auto &cell = pfs_mem_type[type].counters[tls_memcounter_idx];
-	cell.mt_bytes_free.fetch_add(size, std::memory_order_relaxed);
-	cell.mt_count_free.fetch_add(1, std::memory_order_relaxed);
+	pfs_mem_type[type].counters.dec(size);
 }
 
 void *
@@ -199,16 +189,11 @@ pfs_mem_stat(admin_buf_t *ab)
 	for (t = 1; t < M_NTYPE; t++) {
 		mt = &pfs_mem_type[t];
 
-		balloc = bfree = 0;
-		calloc = cfree = 0;
-
-		for (int shard = 0; shard < MEMCOUNTER_SHARDS; shard++) {
-			auto &cell = pfs_mem_type[t].counters[shard];
-			balloc += cell.mt_bytes_alloc.load(std::memory_order_relaxed);
-			bfree += cell.mt_bytes_free.load(std::memory_order_relaxed);
-			calloc += cell.mt_count_alloc.load(std::memory_order_relaxed);
-			cfree += cell.mt_count_free.load(std::memory_order_relaxed);
-		}
+		pfsutil::MemCounters<>::Totals totals = mt->counters.sum();
+		balloc = totals.bytes_alloc;
+		bfree = totals.bytes_free;
+		calloc = totals.count_alloc;
+		cfree = totals.count_free;
 
 		sballoc += balloc;
 		sbfree += bfree;

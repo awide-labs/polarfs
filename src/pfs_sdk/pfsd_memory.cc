@@ -14,28 +14,36 @@
  */
 
 #include <malloc.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
 
 #include "pfsd_memory.h"
+#include "../ipc/access_spreader.h"
 
 typedef struct pfsd_memory {
 	const char	*mt_name;
-	pthread_mutex_t	mt_mtx;
-	ssize_t		mt_bytes_alloc;
-	ssize_t		mt_bytes_free;
-	int64_t		mt_count_alloc;
-	int64_t		mt_count_free;
+	pfsutil::MemCounters<>	counters;
 } pfsd_memtype_t;
 
-#define	MEMTYPE_ENTRY(tag)	[tag] = { #tag, PTHREAD_MUTEX_INITIALIZER, }
-static pfsd_memtype_t pfsd_mem_type[MD_NTYPE] = {
+/*
+ * Positional (not designated) initializers, in MD_* enum order, with an
+ * unsized array: if a future MD_* type is added to the enum but not to this
+ * table, the static_assert below fails at compile time. This is the check
+ * whose absence let MD_MOUNTARG ship with a NULL mt_name (which would feed a
+ * NULL %s to the OOM fprintf).
+ */
+#define	MEMTYPE_ENTRY(tag)	{ #tag, }
+static pfsd_memtype_t	pfsd_mem_type[] = {
 	MEMTYPE_ENTRY(MD_NONE),
 	MEMTYPE_ENTRY(MD_DIR),
 	MEMTYPE_ENTRY(MD_FILE),
+	MEMTYPE_ENTRY(MD_MOUNTARG),
+	MEMTYPE_ENTRY(MD_PATH),
 };
+static_assert(sizeof(pfsd_mem_type) / sizeof(pfsd_mem_type[0]) == MD_NTYPE,
+    "pfsd_mem_type must cover every MD_* type");
 
 static inline const char *
 memtype_name(int type)
@@ -46,50 +54,64 @@ memtype_name(int type)
 static void
 memtype_inc(int type, int count, size_t size)
 {
-	pfsd_memtype_t *mt;
+	assert(0 < type && type < MD_NTYPE);
 
-	assert (0 < type && type < MD_NTYPE);
-
-	mt = &pfsd_mem_type[type];
-	pthread_mutex_lock(&mt->mt_mtx);
-	mt->mt_bytes_alloc += (ssize_t)size;
-	mt->mt_count_alloc += count;
-	pthread_mutex_unlock(&mt->mt_mtx);
+	pfsd_mem_type[type].counters.inc(size, count);
 }
 
 static void
 memtype_dec(int type, size_t size)
 {
-	pfsd_memtype_t *mt;
+	assert(0 < type && type < MD_NTYPE);
 
-	assert (0 < type && type < MD_NTYPE);
-
-	mt = &pfsd_mem_type[type];
-	pthread_mutex_lock(&mt->mt_mtx);
-	mt->mt_bytes_free += (ssize_t)size;
-	mt->mt_count_free += 1;
-	pthread_mutex_unlock(&mt->mt_mtx);
+	pfsd_mem_type[type].counters.dec(size);
 }
 
 void *
 pfsd_mem_malloc(size_t size, int type)
 {
-	void* ptr = malloc(size);
+	void *ptr = malloc(size);
 	if (ptr == NULL) {
 		fprintf(stderr, "malloc failed: type %s, size %zu\n",
 		    memtype_name(type), size);
 		return NULL;
 	}
-	memset(ptr, 0, size);
 	memtype_inc(type, 1, malloc_usable_size(ptr));
 
 	return ptr;
 }
 
 void *
-pfsd_mem_malloc_array(size_t nelem, size_t elemsize, int type)
+pfsd_mem_calloc(size_t nelem, size_t elemsize, int type)
 {
-	return pfsd_mem_malloc(nelem * elemsize, type);
+	void *ptr = calloc(nelem, elemsize);
+	if (ptr == NULL) {
+		fprintf(stderr, "calloc failed: type %s, nelem %zu, elemsize %zu\n",
+		    memtype_name(type), nelem, elemsize);
+		return NULL;
+	}
+	memtype_inc(type, 1, malloc_usable_size(ptr));
+
+	return ptr;
+}
+
+char *
+pfsd_mem_strdup(const char *s, int type)
+{
+	if (s == NULL)
+		return NULL;
+
+	size_t len = strlen(s) + 1;
+	char *p = (char *)malloc(len);
+	if (p == NULL) {
+		fprintf(stderr, "strdup failed: type %s, size %zu\n",
+		    memtype_name(type), len);
+		return NULL;
+	}
+	memcpy(p, s, len);
+	memtype_inc(type, 1, malloc_usable_size(p));
+
+	return p;
 }
 
 void
@@ -133,3 +155,53 @@ pfsd_mem_memalign(void **pp, size_t alignment, size_t size, int type)
 	return err;
 }
 
+int
+pfsd_mem_stat(char *buf, size_t len)
+{
+	if (buf == NULL || len == 0)
+		return -1;
+
+	size_t pos = 0;
+	int n;
+	long long sballoc = 0, sbfree = 0, balloc, bfree;
+	long long scalloc = 0, scfree = 0, calloc, cfree;
+
+	n = snprintf(buf + pos, len - pos, "%-20s %16s %16s %16s %16s\n",
+	    "name", "alloc-count", "free-count", "alloc-bytes", "free-bytes");
+	if (n < 0)
+		return -1;
+	pos += (size_t)n;
+	if (pos >= len)
+		pos = len - 1;
+
+	for (int t = 1; t < MD_NTYPE; t++) {
+		pfsutil::MemCounters<>::Totals totals =
+		    pfsd_mem_type[t].counters.sum();
+		balloc = totals.bytes_alloc;
+		bfree = totals.bytes_free;
+		calloc = totals.count_alloc;
+		cfree = totals.count_free;
+
+		sballoc += balloc;
+		sbfree += bfree;
+		scalloc += calloc;
+		scfree += cfree;
+
+		n = snprintf(buf + pos, len - pos,
+		    "%-20s %16lld %16lld %16lld %16lld\n",
+		    pfsd_mem_type[t].mt_name, calloc, cfree, balloc, bfree);
+		if (n < 0)
+			return -1;
+		pos += (size_t)n;
+		if (pos >= len)
+			pos = len - 1;
+	}
+
+	n = snprintf(buf + pos, len - pos,
+	    "%-20s %16lld %16lld %16lld %16lld\n",
+	    "total", scalloc, scfree, sballoc, sbfree);
+	if (n < 0)
+		return -1;
+
+	return 0;
+}

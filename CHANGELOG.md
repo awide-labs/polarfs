@@ -8,6 +8,26 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Client libraries now dump a per-category memory-usage table to the log on
+  every unmount. If the numbers don't return to zero after the last
+  filesystem is unmounted, the client process is leaking memory — attach
+  this table to the bug report. Monitoring applications can also query the
+  same table programmatically via the new `pfsd_mem_stat()` API (XCOM-188)
+
+### Fixed
+
+- Memory-statistics bookkeeping scaled poorly: due to an arithmetic quirk,
+  all threads were landing on the same statistics slot, so on busy
+  many-threaded instances every allocation and free contended on one shared
+  counter. Statistics are now spread across CPUs, and the per-allocation
+  overhead stays flat as thread count grows (XCOM-188)
+
+- The client library's memory accounting was never actually in use — the
+  tracking code existed but the allocation paths bypassed it. All client
+  allocations are now tracked (XCOM-188)
+
 ## [3.0.1] - 2026-09-01
 
 ### Fixed
