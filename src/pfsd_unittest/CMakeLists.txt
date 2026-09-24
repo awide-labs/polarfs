@@ -118,8 +118,10 @@ target_link_libraries(pfsd_ebusy_test
 
 add_executable(pfsd_stat_test
     pfsd_testenv.cc
+    pfsd_stat_infra.cc
     pfsd_unittest.cc
     pfsd_stat_test.cc
+    pfsd_stat_mountstat_test.cc
 )
 
 target_link_libraries(pfsd_stat_test

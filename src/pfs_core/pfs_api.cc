@@ -550,6 +550,7 @@ _pfs_unlink(const char *pbdpath)
 	pfs_mount_t *mnt = NULL;
 
 	GET_MOUNT_NAMEI(pbdpath, PFS_INODET_FILE, &mnt, &ni);
+	pfs_mntstat_set_file_type(pfs_get_file_type(ni.ni_path));
 
 	err = pfs_memdir_xremove(mnt, &ni);
 	if (err >= 0)
