@@ -182,6 +182,7 @@ pfsd_file_xftruncate(pfs_mount_t *mnt, pfs_inode_t *in, off_t len, uint64_t btim
 	int err = 0;
 
 	PFS_ASSERT(len >= 0);
+	MNT_STAT_BEGIN();
 
 	/*
 	 * pfs_file_truncate() may not truncate file size to len
@@ -196,6 +197,7 @@ pfsd_file_xftruncate(pfs_mount_t *mnt, pfs_inode_t *in, off_t len, uint64_t btim
 		pfs_inode_unlock(in);
 		tls_write_end(err);
 	} while (err == 0 && fsize != len);
+	MNT_STAT_END(MNT_STAT_FILE_TRUNCATE);
 
 	return err;
 }
@@ -293,6 +295,7 @@ _pfsd_pread_svr(pfs_mount_t *mnt, pfs_inode_t *in, void *buf, size_t len,
 	if (len == 0)
 		return 0;
 
+	MNT_STAT_BEGIN();
 	int err;
 	tls_read_begin(mnt);
 	pfs_inode_lock(in);
@@ -300,6 +303,7 @@ _pfsd_pread_svr(pfs_mount_t *mnt, pfs_inode_t *in, void *buf, size_t len,
 	err = rlen < 0 ? rlen : 0;
 	pfs_inode_unlock(in);
 	tls_read_end(err);
+	MNT_STAT_END(MNT_STAT_FILE_READ);
 
 	return rlen;
 }
@@ -485,6 +489,7 @@ pfsd_truncate_svr(const char *pbdpath, off_t len)
 
 	while (err == -EAGAIN) {
 		GET_MOUNT_NAMEI(pbdpath, type, &mnt, &ni);
+		pfs_mntstat_set_file_type(pfs_get_file_type(ni.ni_path));
 
 		pfs_inode_t* in = NULL;
 		err = pfs_memdir_xlookup(mnt, &ni, 0);
@@ -555,6 +560,7 @@ _pfsd_stat_svr(const char *pbdpath, struct stat *buf)
 	int err = 0;
 
 	GET_MOUNT_NAMEI(pbdpath, type, &mnt, &ni);
+	pfs_mntstat_set_file_type(pfs_get_file_type(ni.ni_path));
 
 	pfs_inode_t *in = NULL;
 	err = pfs_memdir_xlookup(mnt, &ni, 0);
@@ -870,10 +876,12 @@ pfsd_file_xlseek(pfs_mount_t *mnt, pfs_inode_t *in, off_t offset,
 	file.f_inode = in;
 	file.f_btime = btime;
 
+	MNT_STAT_BEGIN();
 	tls_read_begin(mnt);
 	curoff = pfs_file_lseek(&file, offset, SEEK_END);
 	err = curoff < 0 ? curoff : 0;
 	tls_read_end(err);
+	MNT_STAT_END(MNT_STAT_FILE_LSEEK);
 
 	return curoff;
 }

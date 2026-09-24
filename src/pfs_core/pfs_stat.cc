@@ -117,6 +117,7 @@ static const char* mountstat_name[MNT_STAT_TYPE_COUNT] = {
     "dev_read",
     "dev_write",
     "dev_trim",
+    "dev_flush",
     "meta_rdlock",
     "meta_wrlock",
 };

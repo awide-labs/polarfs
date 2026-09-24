@@ -8,6 +8,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- For some operations, such as read, truncate, lseek, mountstat, unlink,
+  stat, statistics were calculated incorrectly. This has been fixed (XCOM-190)
+
 ## [3.2.0] - 2026-10-29
 
 ### Added
