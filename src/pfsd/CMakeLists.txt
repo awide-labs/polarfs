@@ -26,7 +26,6 @@ link_directories(
 SET(SRC_LIST_PFSD pfsd_main.cc
                   pfsd_api.cc
                   pfsd_common.cc
-                  pfsd_memory.cc
                   pfsd_option.cc
                   pfsd_worker.cc
                   ../pfs_core/lib/dclcrwlock.cc

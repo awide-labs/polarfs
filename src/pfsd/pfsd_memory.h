@@ -16,20 +16,24 @@
 #ifndef	_PFSD_MEMORY_H_
 #define	_PFSD_MEMORY_H_
 
+#include <stddef.h>
+
 enum {
 	MD_NONE = 0,
 	MD_DIR,
 	MD_FILE,
 	MD_MOUNTARG,
+	MD_PATH,
 
 	MD_NTYPE
 };
 
 void* pfsd_mem_malloc(size_t size, int type);
-void* pfsd_mem_malloc_array(size_t nelem, size_t elemsize, int type);
+void* pfsd_mem_calloc(size_t nelem, size_t elemsize, int type);
+char* pfsd_mem_strdup(const char *s, int type);
 void pfsd_mem_free(void *ptr, int type);
 void* pfsd_mem_realloc(void *ptr, size_t newsize, int type);
 int pfsd_mem_memalign(void **pp, size_t alignment, size_t size, int type);
+int pfsd_mem_stat(char *buf, size_t len);
 
 #endif	/* _PFSD_MEMORY_H_ */
-

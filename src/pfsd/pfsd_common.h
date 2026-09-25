@@ -27,6 +27,8 @@
 #include <errno.h>
 #include <execinfo.h>
 
+#include "pfsd_memory.h"
+
 #define PFSD_SHM_MAGIC (0x0133C96C)
 
 #define PFSD_INVALID_PID (pid_t(0))
@@ -122,9 +124,9 @@ int pfsd_write_pid(const char* pbdname);
 
 #define FILE_MAX_FNAME 512
 
-#define PFSD_MALLOC(T)  (T*)malloc(sizeof(T))
-#define PFSD_MALLOC_ARR(n, T)  (T*)malloc((n) * sizeof(T))
-#define PFSD_FREE(p)	free(p)
+#define PFSD_MALLOC(T, t)  (T*)pfsd_mem_malloc(sizeof(T), (t))
+#define PFSD_CALLOC(T, t)  (T*)pfsd_mem_calloc(1, sizeof(T), (t))
+#define PFSD_FREE(p, t)  pfsd_mem_free((p), (t))
 
 #define PFSD_ARRAY_SIZE(array) (sizeof(array) / sizeof(array[0]))
 
@@ -182,47 +184,6 @@ typedef struct pfsd_cpu_record {
 	time_t cr_ts;                           /* timestamp in seconds */
 	int cr_tindices[PFSD_THREADS_PERCPU];   /* worker threads index */
 } __attribute__((aligned(512))) pfsd_cpu_record_t;
-
-/* For example, if 16 workers, should split into 6,5,5 by PFSD_THREADS_PERCPU */
-static inline
-int* pfsd_calc_threads_per_cpu(int workers, int* groups)
-{
-	if (workers == 0)
-		return NULL;
-
-	int *arr = NULL;
-	int ngroup = 0;
-	/* special process for small workers */
-	if (workers < 2 * (PFSD_THREADS_PERCPU - 1)) {
-		int n[2];
-		n[0] = (workers+1) / 2;
-		n[1] = workers - n[0];
-		ngroup = 1;
-		if (n[1] != 0)
-			ngroup++;
-
-		arr = PFSD_MALLOC_ARR(ngroup, int);
-		for (int i = 0; i < ngroup; ++i) {
-			arr[i] = n[i];
-		}
-	} else {
-		ngroup = (workers + PFSD_THREADS_PERCPU - 1) / PFSD_THREADS_PERCPU;
-		int lacked = ngroup * PFSD_THREADS_PERCPU - workers;
-
-		arr = PFSD_MALLOC_ARR(ngroup, int);
-		for (int i = 0; i < ngroup; ++i) {
-			if (i < lacked)
-				arr[i] = PFSD_THREADS_PERCPU - 1;
-			else
-				arr[i] = PFSD_THREADS_PERCPU;
-		}
-	}
-
-	if (groups != NULL)
-		*groups = ngroup;
-
-	return arr;
-}
 
 inline void
 pfsd_abort(const char *action, const char *cond, const char *func, int line)
