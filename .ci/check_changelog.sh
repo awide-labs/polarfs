@@ -250,8 +250,8 @@ main() {
 
       # Check if changelog was modified in this specific commit
       local changelog_in_commit=false
-      if git show --name-only --format="" "${commit_sha}" 2>/dev/null | \
-         grep -q "^${changelog_file}$"; then
+      if [ -n "$(git show --name-only --format="" "${commit_sha}" -- \
+                 "${changelog_file}" 2>/dev/null)" ]; then
         changelog_in_commit=true
       fi
 
