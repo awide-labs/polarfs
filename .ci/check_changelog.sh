@@ -35,9 +35,17 @@ check_changelog_entry_format() {
   fi
 
   # Get the diff for the changelog file in this commit (added lines only)
-  local diff_output
-  diff_output=$(git show --format="" --no-color "${commit_sha}" -- \
-                "${changelog_file}" 2>/dev/null | \
+  local show_output diff_output
+  if ! show_output=$(git show --format="" --no-color "${commit_sha}" -- \
+                     "${changelog_file}" 2>&1); then
+    log_error "    Cannot read the ${changelog_file} diff:"
+    local show_line
+    while IFS= read -r show_line; do
+      log_error "      ${show_line}"
+    done <<< "${show_output}"
+    return 1
+  fi
+  diff_output=$(printf '%s\n' "${show_output}" | \
                 grep '^+' | grep -v '^+++' | sed 's/^+//' || true)
 
   if [ -z "${diff_output}" ]; then
