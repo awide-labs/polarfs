@@ -8,6 +8,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `pfsadm iostat` and `pfsadm namecachestat` displayed incorrect values:
+  per-second rates are now rounded to the nearest integer; the "other"
+  latency column now shows the TRIM+FLUSH latency; the queue depth is no
+  longer divided by the sample window length (XCOM-191)
+
 ## [3.1.0] - 2026-10-20
 
 ### Added

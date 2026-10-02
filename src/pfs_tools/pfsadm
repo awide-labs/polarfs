@@ -47,6 +47,8 @@ CMD_NAMECACHE_STAT = 21
 
 IO_READ         = 2
 IO_WRITE        = 3
+IO_TRIM         = 4
+IO_FLUSH        = 5
 IO_NTYPES       = 6
 
 def delta2usec(delta):
@@ -486,6 +488,8 @@ class AdminIostat(AdminOperation):
         rcount, wcount = iostats[IO_READ].ncount, iostats[IO_WRITE].ncount
         rbytes, wbytes = iostats[IO_READ].nbytes, iostats[IO_WRITE].nbytes
         rdur, wdur = iostats[IO_READ].duration, iostats[IO_WRITE].duration
+        ocount = iostats[IO_TRIM].ncount + iostats[IO_FLUSH].ncount
+        odur = iostats[IO_TRIM].duration + iostats[IO_FLUSH].duration
         acount = rcount + wcount
         adur = rdur + wdur
         # The busy_time algorithm (ported from Linux update_io_ticks) has a
@@ -502,15 +506,15 @@ class AdminIostat(AdminOperation):
 
         print ( '%-15s %7d %7d %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f' % (
             stat.device_name.decode('ascii'),
-            int(self.normalize(rcount)) if rcount > 0 else 0,
-            int(self.normalize(wcount)) if wcount > 0 else 0,
+            int(round(self.normalize(rcount))) if rcount > 0 else 0,
+            int(round(self.normalize(wcount))) if wcount > 0 else 0,
             self.normalize(rbytes) / (1<<20),
             self.normalize(wbytes) / (1<<20),
             float(delta2usec(rdur)) / rcount if rcount > 0 else 0.0,
             float(delta2usec(wdur)) / wcount if wcount > 0 else 0.0,
-            0.0,
+            float(delta2usec(odur)) / ocount if ocount > 0 else 0.0,
             float(delta2usec(adur)) / acount if acount > 0 else 0.0,
-            self.normalize(qlen),
+            qlen,
             util) )
 
     def handle_reply_payload(self, reply):
@@ -723,12 +727,12 @@ class AdminNameCacheStat(AdminOperation):
         print ("%02d:%02d:%02d   %8d %10d %10d %8.2f %8d %8d %8d" % (
               timestamp[3], timestamp[4], timestamp[5], \
               stat.numcache, \
-              int(self.normalize(self.delta_hits)) if self.delta_hits > 0 else 0, \
-              int(self.normalize(self.delta_miss)) if self.delta_miss > 0 else 0, \
+              int(round(self.normalize(self.delta_hits))) if self.delta_hits > 0 else 0, \
+              int(round(self.normalize(self.delta_miss))) if self.delta_miss > 0 else 0, \
               hitratio, \
-              int(self.normalize(self.delta_evicts)) if self.delta_evicts > 0 else 0, \
-              int(self.normalize(self.delta_dels)) if self.delta_dels > 0 else 0, \
-              int(self.normalize(self.delta_rejects)) if self.delta_rejects > 0 else 0 \
+              int(round(self.normalize(self.delta_evicts))) if self.delta_evicts > 0 else 0, \
+              int(round(self.normalize(self.delta_dels))) if self.delta_dels > 0 else 0, \
+              int(round(self.normalize(self.delta_rejects))) if self.delta_rejects > 0 else 0 \
               ))
 
     def handle_reply_payload(self, reply):

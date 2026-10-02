@@ -57,7 +57,7 @@ struct IostatSnapshot {
 	double		write_mbytes;	/* Mw/s — absolute ds_bytes[WR] / MB */
 	double		avg_read_us;	/* us/r — avg read duration (µs)     */
 	double		avg_write_us;	/* us/w — avg write duration (µs)    */
-	double		avg_other_us;	/* us/o — placeholder, always 0.0    */
+	double		avg_other_us;	/* us/o — avg other duration (µs)    */
 	double		avg_total_us;	/* us/t — avg total duration (µs)    */
 	int64_t		qlen;		/* in-flight: start_count - end_count*/
 	double		util_pct;	/* %util — absolute busy %           */
