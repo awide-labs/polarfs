@@ -41,6 +41,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   now allows for clock differences between hosts (see
   `paxos_clock_skew_max`). The lease watchdog now also counts time spent
   in system suspend (XCOM-202)
+- Read errors or damaged lease information could let a host mount read-write
+  while another host was still writing to the same disk. PolarFS now waits
+  or refuses the mount with `EBUSY` when it cannot safely establish that the
+  previous writer has stopped (XCOM-202)
 - `pfs fscp -c` checksummed only the last 128 KB read of each 4 MB block
   (the last `-n` group of fragments), so corruption elsewhere in the block
   went undetected and the check reported a pass. The whole block is now

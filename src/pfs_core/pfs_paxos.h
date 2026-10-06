@@ -122,7 +122,6 @@ static_assert(sizeof(pfs_host_record_t) == 512,
 int64_t	pfs_paxos_lease_duration(void);
 int64_t	pfs_paxos_clock_skew_max(void);
 int	pfs_rw_lease_prepare(pfs_mount_t *mnt);
-int	pfs_rw_lease_verify_prepare(pfs_mount_t *mnt);
 int	pfs_rw_lease_acquire(pfs_mount_t *mnt);
 int	pfs_rw_lease_write_foreign(pfs_mount_t *mnt, uint32_t foreign_hostid);
 int	pfs_rw_lease_write_foreign_prepare(pfs_mount_t *mnt,
@@ -146,6 +145,12 @@ void	paxos_watchdog_close(pfs_mount_t *mnt);
 extern void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
 /* libpfs_test only: if set, called after verify_prepare, before acquire. */
 extern void (*pfs_rw_lease_test_before_acquire)(pfs_mount_t *mnt);
+/*
+ * libpfs_test only: if set, called by pfs_host_record_read with the sector
+ * just read; may modify it, or return a negative errno to fail the read.
+ */
+extern int (*pfs_rw_lease_test_read_hook)(pfs_mount_t *mnt, uint32_t host_id,
+    void *sector);
 /*
  * libpfs_test only: if set, may adjust each reading of the clock a host uses
  * for its own lease deadlines (clock says which one), e.g. to emulate time
