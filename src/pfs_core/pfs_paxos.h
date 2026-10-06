@@ -136,4 +136,12 @@ void	paxos_watchdog_open(pfs_mount_t *mnt);
 void	paxos_watchdog_pet(pfs_mount_t *mnt);
 void	paxos_watchdog_close(pfs_mount_t *mnt);
 
+#ifdef PFS_TEST
+/*
+ * libpfs_test only: if set, pfs_leader_load calls it after the
+ * live-holder check and before the prepare phase.
+ */
+extern void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
+#endif
+
 #endif

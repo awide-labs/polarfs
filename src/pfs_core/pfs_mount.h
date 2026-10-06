@@ -168,6 +168,15 @@ int		pfs_mount_release(const char *pbdname, int host_id);
 
 
 
+#ifdef PFS_TEST
+/*
+ * libpfs_test only: if set, pfs_mount skips the node-local lock that
+ * admits one RW mount of a PBD per node at a time, so that processes
+ * emulating separate hosts on one machine do not collide on it.
+ */
+extern bool pfs_mount_test_skip_node_lock;
+#endif
+
 pfs_mount_t *	pfs_get_mount(const char *pbdname);
 pfs_mount_t *	pfs_get_mount_byid(int mntid);
 void		pfs_put_mount(pfs_mount_t *mnt);
