@@ -10,6 +10,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fixed cases where two hosts could mount the same disk read-write at the
+  same time, risking filesystem corruption. This could happen during
+  simultaneous mount attempts or when a stalled host resumed. Affected mount
+  attempts now fail with `EBUSY` ("busy") and can be retried (XCOM-202)
 - Fixed incorrect detection of a failed host when hosts' clocks differed.
   The new `paxos_clock_skew_max` setting allows for clock differences of up
   to 2 seconds by default. With default settings, takeover after a host
