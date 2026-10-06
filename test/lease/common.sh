@@ -241,8 +241,9 @@ start_rw_holder() {
     # pfs_rw_lease_wait_and_check in crash-recovery scenario
     # (≤LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 1) + ballot
     # prepare/verify/acquire (≤2s) + log start/replay/poll (≤5s) +
-    # scheduling jitter (5s).
-    local deadline=$((SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 21))
+    # scheduling jitter (5s), plus HOLDER_EXTRA_BUDGET for callers whose
+    # mode deliberately slows the mount down.
+    local deadline=$((SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 21 + ${HOLDER_EXTRA_BUDGET:-0}))
     while [[ $SECONDS -lt $deadline ]]; do
         if grep -q "^MOUNTED$" "$tmpout" 2>/dev/null; then
             rm -f "$tmpout"
