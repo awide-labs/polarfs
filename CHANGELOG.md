@@ -8,6 +8,21 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- New `paxos_clock_skew_max` setting: the largest difference, in seconds,
+  between the clocks of hosts sharing a disk (default 2). Another host's
+  read-write lease is treated as expired only once its last renewal is
+  `paxos_lease_duration` + `paxos_clock_skew_max` + 1 seconds old. Set it to
+  at least the real clock difference between hosts; 0 assumes the clocks
+  agree (XCOM-202)
+
+### Changed
+
+- Takeover after a host failure now waits `paxos_clock_skew_max` + 1
+  seconds longer: 33 seconds instead of 30 with default settings.
+  `pfs lease` shows the new time remaining (XCOM-202)
+
 ### Fixed
 
 - Fixed a memory leak with zero-copy I/O: after each PolarDB crash restart
@@ -17,6 +32,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   per-second rates are now rounded to the nearest integer; the "other"
   latency column now shows the TRIM+FLUSH latency; the queue depth is no
   longer divided by the sample window length (XCOM-191)
+- A host whose clock ran ahead of the others could treat a live host's
+  read-write lease as expired and mount the disk next to it. Lease expiry
+  now allows for clock differences between hosts (see
+  `paxos_clock_skew_max`). The lease watchdog now also counts time spent
+  in system suspend (XCOM-202)
 - `pfs fscp -c` checksummed only the last 128 KB read of each 4 MB block
   (the last `-n` group of fragments), so corruption elsewhere in the block
   went undetected and the check reported a pass. The whole block is now

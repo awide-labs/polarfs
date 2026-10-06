@@ -4,6 +4,7 @@
  * Usage:
  *   pfs_lease_hold <cluster> <pbdname> <hostid> [rw|ro|promote]
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-delay-prepare <ms>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-clock-offset <sec>
  *   pfs_lease_hold <cluster> <pbdname> <rw_hostid> demote <ro_hostid>
  *   pfs_lease_hold <cluster> <pbdname> <writer_hostid> corrupt-sector <target_hostid> <badmagic|badchecksum>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> self-corrupt-renew
@@ -25,6 +26,10 @@
  *             "PREPARE_DELAY" before the sleep and "PREPARE_RESUMED" after.
  *             Lets a test have another host acquire inside that window.
  *             Used by Group M tests.
+ *   rw-clock-offset — like rw, but every timestamp this host writes into
+ *             its lease record is shifted by <sec> seconds (may be
+ *             negative), as if its clock were skewed.  Used by Group M
+ *             tests.
  *   promote — mount RO, print "MOUNTED_RO", block until SIGUSR1; then call
  *             pfs_remount() to promote to RW in-place.  On success prints
  *             "MOUNTED_RW"; on failure prints "REMOUNT_FAILED:<errno>".
@@ -171,6 +176,14 @@ mode_rw_delay_prepare(const char *cluster, const char *pbdname, int hostid,
 {
 	g_prepare_delay_ms = delay_ms;
 	pfs_rw_lease_test_before_prepare = delay_before_prepare;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static int
+mode_rw_clock_offset(const char *cluster, const char *pbdname, int hostid,
+    int64_t offset)
+{
+	pfs_rw_lease_test_clock_offset = offset;
 	return mode_rw_ro(cluster, pbdname, hostid, "rw");
 }
 
@@ -1077,6 +1090,17 @@ main(int argc, char *argv[])
 		}
 		return mode_rw_delay_prepare(cluster, pbdname, hostid,
 		    atol(argv[5]));
+	}
+
+	if (strcmp(mode, "rw-clock-offset") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-clock-offset <sec>\n");
+			return 1;
+		}
+		return mode_rw_clock_offset(cluster, pbdname, hostid,
+		    atoll(argv[5]));
 	}
 
 	if (strcmp(mode, "promote") == 0)
