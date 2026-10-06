@@ -40,6 +40,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   the updated time remaining before takeover. The lease watchdog now also
   counts time spent in system suspend (XCOM-202)
 
+- Read errors or damaged lease information could let a host mount read-write
+  while another host was still writing to the same disk. PolarFS now waits
+  or refuses the mount with `EBUSY` when it cannot safely establish that the
+  previous writer has stopped (XCOM-202)
+
 ### Performance
 
 - `devstat` and `mountstat` statistics modules significantly slowed down
