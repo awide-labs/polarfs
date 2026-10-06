@@ -32,6 +32,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   per-second rates are now rounded to the nearest integer; the "other"
   latency column now shows the TRIM+FLUSH latency; the queue depth is no
   longer divided by the sample window length (XCOM-191)
+- Fixed cases where two hosts could mount the same disk read-write at the
+  same time, risking filesystem corruption. This could happen during
+  simultaneous mount attempts or when a stalled host resumed. Affected mount
+  attempts now fail with `EBUSY` ("busy") and can be retried (XCOM-202)
 - A host whose clock ran ahead of the others could treat a live host's
   read-write lease as expired and mount the disk next to it. Lease expiry
   now allows for clock differences between hosts (see
