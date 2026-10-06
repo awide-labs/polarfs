@@ -9,13 +9,21 @@
 #        H5 should mount RW quickly — the stale prepare is superseded by
 #        H5's higher ballot during verify_prepare.
 #
-# TC-M2: Concurrent mount race — exactly one winner (highest ballot).
-#        Same as TC-F4 but specifically validates ballot-based behavior.
-#        Three hosts start simultaneously; exactly one wins.
+# TC-M2: Concurrent mount race — at most one winner per round.
+#        Three hosts start simultaneously; at most one may mount.  A round
+#        can end with every host yielding (EBUSY), so it is retried until
+#        one wins.
 #
 # TC-M3: Uncontested mount is faster without settle sleep.
 #        A single host mounts RW from a clean slate.  Should complete
 #        significantly faster than the old 1s settle sleep would allow.
+#
+# TC-M4: Higher-ballot stale prepare causes immediate EBUSY.
+#
+# TC-M5: A late higher-ballot host cannot take over an established holder.
+#        H12 passes the live-holder check and pauses before prepare; H11
+#        (lower ballot) completes acquisition and mounts RW meanwhile.  When
+#        H12 resumes, its higher ballot must not let it mount next to H11.
 
 source "$(dirname "$0")/common.sh"
 
@@ -36,9 +44,9 @@ echo "TC-M1: stale prepare from crashed host doesn't block"
 # cleanly (its own sector is zeroed).  Host 3's sector remains as a
 # FL_PREPARE with ballot = 1*254+3 = 257.
 tmpout=$(mktemp)
+rv=0
 "$PFS_LEASE_HOLD" "$LEASE_TEST_CLUSTER" "$TEST_LOOP_DEVICE_NAME" \
-    1 write-prepare-record 3 1 >"$tmpout" 2>>"$PFS_LOG"
-rv=$?
+    1 write-prepare-record 3 1 >"$tmpout" 2>>"$PFS_LOG" || rv=$?
 if [[ $rv -ne 0 ]] || ! grep -q "^PREPARE_WRITTEN$" "$tmpout"; then
     rm -f "$tmpout"
     fail "TC-M1: could not plant stale prepare record for host 3"
@@ -61,58 +69,24 @@ else
     else
         fail "TC-M1: H5 failed to mount with stale prepare from H3"
     fi
+
+    # Clear the planted prepare: while live, its ballot (257) preempts any
+    # lower-ballot host, e.g. TC-M4's writer.  H3 mounting (reads its own
+    # gen=1, bumps to gen=2) and unmounting cleanly zeroes its sector.
+    if start_rw_holder 3; then
+        stop_holder
+    else
+        fail "TC-M1: cleanup: H3 could not mount to clear its planted prepare"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
-# TC-M2: Concurrent mount race — exactly one winner
+# TC-M2: Concurrent mount race — at most one winner per round
 # ---------------------------------------------------------------------------
 echo ""
-echo "TC-M2: concurrent ballot race — exactly one winner"
+echo "TC-M2: concurrent ballot race — at most one winner, eventually one"
 
-# Same structure as TC-F4 but from a clean slate.
-# Three hosts start simultaneously; the ballot protocol ensures exactly
-# one wins (highest ballot = highest generation * num_hosts + host_id).
-tmpout6=$(mktemp); tmpout7=$(mktemp); tmpout8=$(mktemp)
-lease_hold 6 rw >"$tmpout6" & PID6=$!
-lease_hold 7 rw >"$tmpout7" & PID7=$!
-lease_hold 8 rw >"$tmpout8" & PID8=$!
-
-# Give enough time for the winner to mount and losers to fail.
-# Losers may need up to LEASE_TEST_DURATION for wait_and_check if they
-# see the winner's RW record as live during the check phase.
-sleep $((LEASE_TEST_DURATION + 3))
-
-winners=(); loser_pids=()
-for tuple in "6:$PID6:$tmpout6" "7:$PID7:$tmpout7" "8:$PID8:$tmpout8"; do
-    hostid="${tuple%%:*}"; rest="${tuple#*:}"; pid="${rest%%:*}"; tmpf="${rest#*:}"
-    if grep -q "^MOUNTED$" "$tmpf" 2>/dev/null; then
-        winners+=("$hostid:$pid")
-    else
-        loser_pids+=("$pid")
-    fi
-    rm -f "$tmpf"
-done
-
-# Stop winners cleanly
-for entry in "${winners[@]:-}"; do
-    pid="${entry#*:}"
-    [[ -n "$pid" ]] && { kill -TERM "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
-done
-# Force-kill any losers still in flight
-for pid in "${loser_pids[@]:-}"; do
-    [[ -n "$pid" ]] && { kill -KILL "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
-done
-
-nwon=${#winners[@]}
-if [[ $nwon -eq 1 ]]; then
-    pass "TC-M2: exactly 1 of 3 concurrent mounts won (host ${winners[0]%%:*})"
-elif [[ $nwon -eq 0 ]]; then
-    fail "TC-M2: no host won the concurrent ballot race (all failed)"
-else
-    winner_hosts=""
-    for e in "${winners[@]}"; do winner_hosts+="${e%%:*} "; done
-    fail "TC-M2: split-brain — $nwon hosts mounted RW simultaneously (hosts $winner_hosts)"
-fi
+race_rw_mounts TC-M2 6 7 8
 
 # ---------------------------------------------------------------------------
 # TC-M3: Uncontested mount completes without 1s settle delay
@@ -147,9 +121,9 @@ echo "TC-M4: higher-ballot stale prepare blocks mount with EBUSY"
 # Host 5's initial gen=1 → ballot = 1*254+5 = 259 < 511.
 # verify_prepare returns -EBUSY immediately (no retry).
 tmpout=$(mktemp)
+rv=0
 "$PFS_LEASE_HOLD" "$LEASE_TEST_CLUSTER" "$TEST_LOOP_DEVICE_NAME" \
-    1 write-prepare-record 3 2 >"$tmpout" 2>>"$PFS_LOG"
-rv=$?
+    1 write-prepare-record 3 2 >"$tmpout" 2>>"$PFS_LOG" || rv=$?
 if [[ $rv -ne 0 ]] || ! grep -q "^PREPARE_WRITTEN$" "$tmpout"; then
     rm -f "$tmpout"
     fail "TC-M4: could not plant prepare record for host 3 (gen=2)"
@@ -178,5 +152,74 @@ else
         stop_holder
     fi
 fi
+
+# ---------------------------------------------------------------------------
+# TC-M5: Late higher-ballot host cannot take over an established holder
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-M5: late higher-ballot host blocked by established holder"
+
+# Both hosts start at generation 1, so H12's ballot (1*254+12) is higher
+# than H11's (1*254+11).  H12 runs in rw-delay-prepare mode: it sleeps
+# after its live-holder check (no holder yet) and before writing its
+# prepare.  H11 mounts during that window.
+M5_LOW=11
+M5_HIGH=12
+M5_DELAY_MS=15000
+m5_out=$(mktemp)
+
+lease_hold "$M5_HIGH" rw-delay-prepare "$M5_DELAY_MS" >"$m5_out" &
+M5_HIGH_PID=$!
+
+# Wait for H12 to pass its live-holder check and enter the delay.
+m5_paused=0
+deadline=$((SECONDS + LEASE_TEST_DURATION + 20))
+while [[ $SECONDS -lt $deadline ]]; do
+    if grep -q "^PREPARE_DELAY$" "$m5_out" 2>/dev/null; then
+        m5_paused=1
+        break
+    fi
+    kill -0 "$M5_HIGH_PID" 2>/dev/null || break
+    sleep 0.2
+done
+
+if [[ $m5_paused -ne 1 ]]; then
+    fail "TC-M5: H${M5_HIGH} never reached the pre-prepare delay"
+elif ! start_rw_holder "$M5_LOW"; then
+    fail "TC-M5: H${M5_LOW} could not mount RW while H${M5_HIGH} was paused"
+elif grep -q "^PREPARE_RESUMED$" "$m5_out" 2>/dev/null; then
+    stop_holder
+    fail "TC-M5: inconclusive — H${M5_HIGH} resumed before H${M5_LOW} finished mounting (raise M5_DELAY_MS)"
+else
+    # H11 holds the lease.  Let H12 resume and see whether it mounts.
+    m5_high_rv=""
+    deadline=$((SECONDS + M5_DELAY_MS / 1000 + LEASE_TEST_DURATION + 20))
+    while [[ $SECONDS -lt $deadline ]]; do
+        if grep -q "^MOUNTED$" "$m5_out" 2>/dev/null; then
+            break
+        fi
+        if ! kill -0 "$M5_HIGH_PID" 2>/dev/null; then
+            m5_high_rv=0
+            wait "$M5_HIGH_PID" 2>/dev/null || m5_high_rv=$?
+            break
+        fi
+        sleep 0.2
+    done
+
+    if grep -q "^MOUNTED$" "$m5_out" 2>/dev/null; then
+        fail "TC-M5: split-brain — H${M5_HIGH} mounted RW while H${M5_LOW} holds the lease"
+    elif [[ -z "$m5_high_rv" ]]; then
+        fail "TC-M5: H${M5_HIGH} neither mounted nor exited after its delay"
+    elif ! kill -0 "$HOLDER_PID" 2>/dev/null; then
+        fail "TC-M5: H${M5_LOW} lost its RW mount"
+    else
+        pass "TC-M5: H${M5_HIGH} rejected (exit $m5_high_rv), H${M5_LOW} keeps the lease"
+    fi
+    stop_holder
+fi
+
+kill -TERM "$M5_HIGH_PID" 2>/dev/null || true
+wait "$M5_HIGH_PID" 2>/dev/null || true
+rm -f "$m5_out"
 
 lease_test_summary

@@ -97,7 +97,7 @@ add_executable(pfs_lease_hold
 )
 
 target_link_libraries(pfs_lease_hold
-    pfs
+    pfs_test
 )
 
 add_executable(pfs_hole_bench
