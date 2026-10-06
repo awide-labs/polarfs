@@ -16,6 +16,7 @@
 # TC-G4: Concurrent pfs_remount race — multiple RO replicas trigger
 #        promotion simultaneously; at most one must win (no split-brain),
 #        and every losing host's sector must be zeroed by conflict detection.
+#        A round in which all yield is retried until one wins.
 # TC-G5: pfs_remount cleans up correctly on unmount — after a successful
 #        promotion the lease sector is zeroed on clean unmount.
 # TC-G6: pfs_remount_ro (RW→RO demotion) — after pfs_mount_release() drops
@@ -152,7 +153,7 @@ fi
 # TC-G4: Concurrent pfs_remount race — at most one winner
 # ---------------------------------------------------------------------------
 echo ""
-echo "TC-G4: concurrent pfs_remount race — exactly one winner, no split-brain"
+echo "TC-G4: concurrent pfs_remount race — at most one winner, eventually one"
 
 # Start three RO holders sequentially — wait for each "MOUNTED_RO" before
 # launching the next.  This avoids a race where concurrent pfs_mount_acquire
@@ -169,79 +170,107 @@ wait_mounted_ro() {
     return 1
 }
 
-g4_ready=true
-tmpout2=$(mktemp); tmpout3=$(mktemp); tmpout4=$(mktemp)
-PID2="" PID3="" PID4=""
+# Result a promote holder has printed so far, from complete lines only:
+# "RW", "FAILED:<errno>", or nothing yet.  The holder is still running, so a
+# line may be half written; one snapshot of the file, without its unfinished
+# last line, keeps it from being misread.
+g4_result() {
+    local content line
+    content=$(cat "$1" 2>/dev/null; printf .)
+    content=${content%.}
+    content=${content%"${content##*$'\n'}"}
+    while IFS= read -r line; do
+        case $line in
+        MOUNTED_RW) echo RW; return ;;
+        REMOUNT_FAILED:*) echo "FAILED:${line#REMOUNT_FAILED:}"; return ;;
+        esac
+    done <<<"$content"
+}
 
-lease_hold 2 promote >"$tmpout2" & PID2=$!
-if ! wait_mounted_ro "$PID2" "$tmpout2" 2; then
-    g4_ready=false
-fi
-
-if $g4_ready; then
-    lease_hold 3 promote >"$tmpout3" & PID3=$!
-    if ! wait_mounted_ro "$PID3" "$tmpout3" 3; then
-        g4_ready=false
-    fi
-fi
-
-if $g4_ready; then
-    lease_hold 4 promote >"$tmpout4" & PID4=$!
-    if ! wait_mounted_ro "$PID4" "$tmpout4" 4; then
-        g4_ready=false
-    fi
-fi
-
-if ! $g4_ready; then
-    for pid in ${PID2:-} ${PID3:-} ${PID4:-}; do
-        [[ -n "$pid" ]] && { kill -KILL "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
-    done
-    rm -f "$tmpout2" "$tmpout3" "$tmpout4"
-    fail "TC-G4: not all three holders reached MOUNTED_RO"
-else
-    # Fire all three promotions simultaneously
-    kill -USR1 $PID2 $PID3 $PID4 2>/dev/null || true
-
-    # Wait for all three to settle (winner mounts, losers get EBUSY quickly)
-    sleep $((LEASE_TEST_DURATION + 3))
-
-    winners=(); loser_pids=(); loser_hostids=()
-    for tuple in "2:$PID2:$tmpout2" "3:$PID3:$tmpout3" "4:$PID4:$tmpout4"; do
-        hostid="${tuple%%:*}"; rest="${tuple#*:}"
-        pid="${rest%%:*}"; tmpf="${rest#*:}"
-        if grep -q "^MOUNTED_RW$" "$tmpf" 2>/dev/null; then
-            winners+=("$hostid:$pid")
-        else
-            loser_pids+=("$pid")
-            loser_hostids+=("$hostid")
+# Like race_rw_mounts, but the hosts race to promote: every host that does
+# not win must report REMOUNT_FAILED with EBUSY and stay alive (its mount is
+# restored to RO), and a round with no winner is retried, up to RACE_ROUNDS
+# times.
+g4_hosts=(2 3 4)
+g4_done=false
+for ((round = 1; round <= RACE_ROUNDS; round++)); do
+    g4_pids=(); g4_outs=()
+    g4_ready=true
+    for i in "${!g4_hosts[@]}"; do
+        g4_outs[i]=$(mktemp)
+        lease_hold "${g4_hosts[i]}" promote >"${g4_outs[i]}" &
+        g4_pids[i]=$!
+        if ! wait_mounted_ro "${g4_pids[i]}" "${g4_outs[i]}" "${g4_hosts[i]}"; then
+            g4_ready=false
+            break
         fi
-        rm -f "$tmpf"
     done
 
-    for entry in "${winners[@]:-}"; do
-        local_pid="${entry#*:}"
-        [[ -n "$local_pid" ]] && { kill -TERM "$local_pid" 2>/dev/null || true; wait "$local_pid" 2>/dev/null || true; }
-    done
-    for local_pid in "${loser_pids[@]:-}"; do
-        [[ -n "$local_pid" ]] && { kill -KILL "$local_pid" 2>/dev/null || true; wait "$local_pid" 2>/dev/null || true; }
-    done
-
-    nwon=${#winners[@]}
-    if [[ $nwon -eq 1 ]]; then
-        pass "TC-G4: exactly 1 of 3 concurrent remounts won (host ${winners[0]%%:*})"
-    elif [[ $nwon -eq 0 ]]; then
-        fail "TC-G4: no host won the concurrent remount race (all failed)"
-    else
-        winner_hosts=""
-        for e in "${winners[@]}"; do winner_hosts+="${e%%:*} "; done
-        fail "TC-G4: split-brain — $nwon hosts promoted simultaneously (hosts $winner_hosts)"
+    if ! $g4_ready; then
+        for i in "${!g4_pids[@]}"; do
+            kill -KILL "${g4_pids[i]}" 2>/dev/null || true
+            wait "${g4_pids[i]}" 2>/dev/null || true
+            rm -f "${g4_outs[i]}"
+        done
+        fail "TC-G4: not all three holders reached MOUNTED_RO in round $round"
+        g4_done=true
+        break
     fi
+
+    # Fire all three promotions, simultaneously in the first round and
+    # staggered randomly in retries.
+    for i in "${!g4_hosts[@]}"; do
+        [[ $round -gt 1 ]] && sleep "0.$((RANDOM % 10))"
+        kill -USR1 "${g4_pids[i]}" 2>/dev/null || true
+    done
+
+    # Wait until each promotion has succeeded or failed.  Budget as in
+    # trigger_promote.
+    deadline=$((SECONDS + LEASE_TEST_DURATION + 25))
+    while :; do
+        winners=(); loser_hostids=(); refusals=(); pending=0
+        for i in "${!g4_hosts[@]}"; do
+            # Check liveness first: a holder seen dead has printed all it
+            # ever will.
+            alive=true
+            kill -0 "${g4_pids[i]}" 2>/dev/null || alive=false
+            result=$(g4_result "${g4_outs[i]}")
+            case $result in
+            RW)
+                winners+=("${g4_hosts[i]}") ;;
+            "FAILED:$EBUSY")
+                loser_hostids+=("${g4_hosts[i]}") ;;
+            FAILED:*)
+                refusals+=("H${g4_hosts[i]} failed with errno ${result#FAILED:}, expected $EBUSY") ;;
+            *)
+                if $alive; then
+                    pending=$((pending + 1))
+                else
+                    refusals+=("H${g4_hosts[i]} exited without a result")
+                fi ;;
+            esac
+        done
+        [[ $pending -eq 0 || $SECONDS -ge $deadline ]] && break
+        sleep 0.2
+    done
+
+    # Unmount winners cleanly; kill the rest.
+    for i in "${!g4_hosts[@]}"; do
+        if grep -q "^MOUNTED_RW$" "${g4_outs[i]}" 2>/dev/null; then
+            kill -TERM "${g4_pids[i]}" 2>/dev/null || true
+        else
+            kill -KILL "${g4_pids[i]}" 2>/dev/null || true
+        fi
+        wait "${g4_pids[i]}" 2>/dev/null || true
+        rm -f "${g4_outs[i]}"
+    done
 
     # Verify each losing host's paxos sector was zeroed by conflict detection.
-    # The loser (lower ballot) is rejected at verify_prepare or check_conflict;
+    # The loser is rejected at verify_prepare or check_conflict;
     # pfs_leader_load calls pfs_host_record_clear before returning, so the
     # clear completes before pfs_remount returns -EBUSY.
     for loser_hid in "${loser_hostids[@]:-}"; do
+        [[ -z "$loser_hid" ]] && continue
         sector_offset=$(paxos_sector_offset "$loser_hid")
         tmp=$(mktemp)
         pfs_cmd 50 read -o "$sector_offset" -l "$LEASE_TEST_SECTOR_SIZE" \
@@ -259,7 +288,34 @@ else
             fail "TC-G4: loser host $loser_hid sector has $nonzero non-zero bytes — not cleared after yielding"
         fi
     done
-fi
+
+    if [[ ${#winners[@]} -gt 1 ]]; then
+        fail "TC-G4: split-brain — ${#winners[@]} hosts promoted simultaneously (hosts ${winners[*]})"
+        g4_done=true
+        break
+    fi
+    if [[ $pending -gt 0 ]]; then
+        fail "TC-G4: $pending host(s) neither promoted nor failed in round $round"
+        g4_done=true
+        break
+    fi
+    if [[ ${#refusals[@]} -gt 0 ]]; then
+        g4_problem="${refusals[0]}"
+        for r in "${refusals[@]:1}"; do
+            g4_problem+="; $r"
+        done
+        fail "TC-G4: round $round: $g4_problem"
+        g4_done=true
+        break
+    fi
+    if [[ ${#winners[@]} -eq 1 ]]; then
+        pass "TC-G4: host ${winners[0]} won round $round of the concurrent remount race, no split-brain"
+        g4_done=true
+        break
+    fi
+    echo "  TC-G4: round $round: every host yielded, retrying"
+done
+$g4_done || fail "TC-G4: no host won in $RACE_ROUNDS rounds"
 
 # ---------------------------------------------------------------------------
 # TC-G5: After pfs_remount, clean unmount zeroes the lease sector

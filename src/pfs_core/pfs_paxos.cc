@@ -52,6 +52,10 @@ static int64_t paxos_watchdog_enable     = 0;  /* 0=disabled, 1=enable /dev/watc
 PFS_OPTION_REG(paxos_lease_duration,       pfs_check_ival_normal);
 PFS_OPTION_REG(paxos_watchdog_enable,      pfs_check_ival_normal);
 
+#ifdef PFS_TEST
+void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
+#endif
+
 /* forward declarations: static helpers defined later in this file */
 static int pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret);
 static int pfs_rw_lease_check_conflict(pfs_mount_t *mnt);
@@ -473,12 +477,17 @@ pfs_leader_load(pfs_mount_t *mnt)
 		else
 			mnt->mnt_host_generation = 1;
 
+#ifdef PFS_TEST
+		if (pfs_rw_lease_test_before_prepare)
+			pfs_rw_lease_test_before_prepare(mnt);
+#endif
+
 		/*
 		 * Disk Paxos two-phase protocol:
 		 * prepare → verify → acquire → conflict-check.
 		 * Ballot-based arbitration handles concurrent acquires.
-		 * If verify_prepare finds a higher ballot, we fail
-		 * immediately with -EBUSY.
+		 * If verify_prepare finds a live RW holder or a higher
+		 * ballot, we fail immediately with -EBUSY.
 		 */
 		rv = pfs_rw_lease_prepare(mnt);
 		if (rv < 0) {
@@ -745,7 +754,8 @@ pfs_host_record_clear(pfs_mount_t *mnt, uint32_t host_id)
  * Pre-lease check: scan all host sectors for an existing live RW holder.
  * Called before the prepare phase to detect an active lease early,
  * avoiding the overhead of a full prepare→acquire cycle when another
- * host already holds the lease.
+ * host already holds the lease.  It is not sufficient on its own: a host
+ * may acquire after this scan, which pfs_rw_lease_verify_prepare catches.
  *
  * Returns 0 if no live RW holder is found, -EBUSY if a host has an
  * RW record whose timestamp is within paxos_lease_duration.  Corrupt
@@ -869,15 +879,23 @@ pfs_rw_lease_prepare(pfs_mount_t *mnt)
 
 /*
  * Disk Paxos Phase 1 "verify prepare": re-read all other host sectors.
- * If any fresh record has mbal > our ballot, our prepare is preempted.
+ * Our prepare is preempted if any fresh record is FL_RW (any ballot) or
+ * has mbal > our ballot.
+ *
+ * The FL_RW rule is what keeps the lease exclusive.  pfs_rw_lease_check
+ * runs before our prepare is on disk, so a host can acquire after it; that
+ * host's conflict check may also have run before our prepare, in which case
+ * it will never yield to us.  Any host that acquired without seeing our
+ * prepare wrote FL_RW before we got here, so this re-read is guaranteed to
+ * see it.  Ballots only arbitrate between hosts acquiring concurrently.
  *
  * Only records with a fresh timestamp (age < lease_duration) are considered.
  * Stale records from expired leases or crashed hosts are ignored — their
  * ballots are no longer relevant.
  *
  * Returns:
- *   0      — no higher ballot found; safe to proceed to acquire
- *  -EBUSY  — a higher ballot was found; another host is competing
+ *   0      — no RW holder and no higher ballot; safe to proceed to acquire
+ *  -EBUSY  — another host holds or is acquiring the lease
  */
 int
 pfs_rw_lease_verify_prepare(pfs_mount_t *mnt)
@@ -900,6 +918,21 @@ pfs_rw_lease_verify_prepare(pfs_mount_t *mnt)
 		uint64_t age = (uint64_t)now.tv_sec - hr.hr_timestamp;
 		if (age >= (uint64_t)paxos_lease_duration)
 			continue;  /* stale — ballot no longer relevant */
+
+		/*
+		 * A fresh RW record blocks us regardless of its ballot: that
+		 * host may already have passed its conflict check, which ran
+		 * before our prepare was on disk, so it would never yield.
+		 */
+		if (hr.hr_flags & PFS_HOST_FL_RW) {
+			pfs_itrace("rw_lease_verify_prepare: host %u holds "
+			    "fresh RW lease (ballot %llu, age=%llus), "
+			    "preempted\n",
+			    hr.hr_host_id,
+			    (unsigned long long)hr.hr_bal,
+			    (unsigned long long)age);
+			return -EBUSY;
+		}
 
 		if (hr.hr_mbal > mnt->mnt_current_ballot) {
 			pfs_itrace("rw_lease_verify_prepare: host %u has "
@@ -934,8 +967,11 @@ pfs_rw_lease_verify_prepare(pfs_mount_t *mnt)
  * FL_RW and our ballot.  Re-reads every sector to detect races where two
  * hosts both passed prepare+verify before either had written acquire.
  *
- * Tie-break rule: highest ballot wins.  If another host has a fresh record
- * (FL_RW or FL_PREPARE) with a higher ballot, we are the loser.
+ * Tie-break rule: if another host has a fresh record (FL_RW or FL_PREPARE)
+ * with a higher ballot, we are the loser.  The highest ballot does not always
+ * win: a higher-ballot host whose prepare landed after our FL_RW yields to
+ * that FL_RW in verify_prepare, so concurrent acquirers can all get -EBUSY.
+ * Each clears its sector, so a retry can win.
  *
  * Returns:
  *   0      — we have the highest ballot; we hold the lease

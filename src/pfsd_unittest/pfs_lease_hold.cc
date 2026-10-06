@@ -3,6 +3,7 @@
  *
  * Usage:
  *   pfs_lease_hold <cluster> <pbdname> <hostid> [rw|ro|promote]
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-delay-prepare <ms>
  *   pfs_lease_hold <cluster> <pbdname> <rw_hostid> demote <ro_hostid>
  *   pfs_lease_hold <cluster> <pbdname> <writer_hostid> corrupt-sector <target_hostid> <badmagic|badchecksum>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> self-corrupt-renew
@@ -16,7 +17,14 @@
  *
  * Modes:
  *   rw      — mount RW, print "MOUNTED", block until SIGTERM, unmount.
+ *             If the mount fails, print "MOUNT_FAILED:<errno>" and exit 2;
+ *             so do all modes described as "like rw".
  *   ro      — mount RO, print "MOUNTED", block until SIGTERM, unmount.
+ *   rw-delay-prepare — like rw, but RW lease acquisition sleeps <ms> after
+ *             the live-holder check and before the prepare phase, printing
+ *             "PREPARE_DELAY" before the sleep and "PREPARE_RESUMED" after.
+ *             Lets a test have another host acquire inside that window.
+ *             Used by Group M tests.
  *   promote — mount RO, print "MOUNTED_RO", block until SIGUSR1; then call
  *             pfs_remount() to promote to RW in-place.  On success prints
  *             "MOUNTED_RW"; on failure prints "REMOUNT_FAILED:<errno>".
@@ -71,6 +79,11 @@
  *   refcount-three-client — three clients (A=RW, B=RO, C=RO) with chained
  *             release/demote/umount verifying host_id transfer at each step.
  *
+ * Every mode acts as a host of its own: pfs_mount skips the node-local lock
+ * that admits one RW mount per node at a time (pfs_mount_test_skip_node_lock),
+ * as separate hosts never share it.  Otherwise RW mounts racing on this one
+ * machine would fail with EACCES before reaching the lease protocol.
+ *
  * Exit codes:
  *   0  — clean lifecycle
  *   1  — bad usage
@@ -115,7 +128,11 @@ mode_rw_ro(const char *cluster, const char *pbdname, int hostid,
 	int flags = (strcmp(mode, "ro") == 0) ? PFS_RD : PFS_RDWR;
 	int r = pfs_mount(cluster, pbdname, hostid, flags);
 	if (r != 0) {
-		fprintf(stderr, "pfs_mount failed: %d\n", r);
+		int err = errno;
+
+		fprintf(stderr, "pfs_mount failed: %d, errno %d\n", r, err);
+		printf("MOUNT_FAILED:%d\n", err);
+		fflush(stdout);
 		return 2;
 	}
 
@@ -127,6 +144,34 @@ mode_rw_ro(const char *cluster, const char *pbdname, int hostid,
 
 	pfs_umount(pbdname);
 	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+static long g_prepare_delay_ms;
+
+static void
+delay_before_prepare(pfs_mount_t *mnt)
+{
+	struct timespec ts;
+
+	printf("PREPARE_DELAY\n");
+	fflush(stdout);
+	ts.tv_sec = g_prepare_delay_ms / 1000;
+	ts.tv_nsec = (g_prepare_delay_ms % 1000) * 1000000;
+	while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
+		;
+	printf("PREPARE_RESUMED\n");
+	fflush(stdout);
+}
+
+static int
+mode_rw_delay_prepare(const char *cluster, const char *pbdname, int hostid,
+    long delay_ms)
+{
+	g_prepare_delay_ms = delay_ms;
+	pfs_rw_lease_test_before_prepare = delay_before_prepare;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
 }
 
 /* ------------------------------------------------------------------ */
@@ -1018,8 +1063,21 @@ main(int argc, char *argv[])
 	signal(SIGHUP,  sighandler);
 	signal(SIGUSR1, sigusr1handler);
 
+	pfs_mount_test_skip_node_lock = true;
+
 	if (strcmp(mode, "rw") == 0 || strcmp(mode, "ro") == 0)
 		return mode_rw_ro(cluster, pbdname, hostid, mode);
+
+	if (strcmp(mode, "rw-delay-prepare") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-delay-prepare <ms>\n");
+			return 1;
+		}
+		return mode_rw_delay_prepare(cluster, pbdname, hostid,
+		    atol(argv[5]));
+	}
 
 	if (strcmp(mode, "promote") == 0)
 		return mode_promote(cluster, pbdname, hostid);

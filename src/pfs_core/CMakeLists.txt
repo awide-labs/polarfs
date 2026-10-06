@@ -72,3 +72,23 @@ target_link_libraries(pfs
 
 set_property(TARGET pfs PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+# lib pfs_test: same sources as libpfs plus test hooks, for test helpers only
+add_library(pfs_test STATIC
+    ${SRC_LIST}
+    ${SRC_LIST_LIB}
+)
+
+target_compile_definitions(pfs_test PUBLIC PFS_TEST)
+
+target_link_libraries(pfs_test
+    -Wl,--start-group
+    rt
+    pthread
+    dl
+    aio
+    fastcrc32
+    -Wl,--end-group
+)
+
+set_property(TARGET pfs_test PROPERTY POSITION_INDEPENDENT_CODE ON)
+

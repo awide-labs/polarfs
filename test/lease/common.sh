@@ -117,6 +117,48 @@ assert_log_contains() {
     fi
 }
 
+# errno values pfs_lease_hold reports as MOUNT_FAILED:<errno>.
+EBUSY=16
+
+# Current size of $PFS_LOG: pass it to refusal_problem as <log_offset> to
+# look only at what is logged from now on.
+log_offset() {
+    stat -c %s "$PFS_LOG" 2>/dev/null || echo 0
+}
+
+# refusal_problem <pid> <rv> <out> <log_offset> <errno> <pattern>...
+#
+# Checks that pfs_lease_hold process <pid>, which exited with status <rv>
+# and wrote its stdout to <out>, had its mount refused the intended way: it
+# exited normally with status 2 after printing MOUNT_FAILED:<errno>, and
+# the lines its main (mounting) thread logged after byte <log_offset> of
+# $PFS_LOG match every extended regex <pattern>.  A crash, a hang or an
+# unrelated error does not qualify.  Prints what is wrong, or nothing.
+refusal_problem() {
+    local pid="$1" rv="$2" out="$3" offset="$4" errno="$5"
+    shift 5
+    local got lines pat
+
+    if [[ "$rv" -ne 2 ]]; then
+        echo "exited with status $rv, expected 2 (mount failed)"
+        return
+    fi
+    got=$(sed -n 's/^MOUNT_FAILED://p' "$out" 2>/dev/null)
+    if [[ "$got" != "$errno" ]]; then
+        echo "mount failed with errno ${got:-<none>}, expected $errno"
+        return
+    fi
+    # Log lines carry the writing thread's id; the main thread's is the pid.
+    lines=$(tail -c +"$((offset + 1))" "$PFS_LOG" 2>/dev/null |
+        grep -F "[$pid] ") || true
+    for pat in "$@"; do
+        if ! grep -qE -- "$pat" <<<"$lines"; then
+            echo "it did not log /$pat/"
+            return
+        fi
+    done
+}
+
 # Mount RW and keep mount open (via pfs_lease_hold).
 # Sets HOLDER_PID.  Waits for "MOUNTED" from the helper before returning.
 # Returns non-zero if mount fails.
@@ -502,6 +544,100 @@ trigger_watchdog_stall() {
     rm -f "$tmpout"; WATCHDOG_STALL_TMPOUT=""
     HOLDER_PID=""
     return 1
+}
+
+# Rounds a concurrent acquisition race may take to produce a winner.
+RACE_ROUNDS="${RACE_ROUNDS:-5}"
+
+# race_rw_mounts <tc> <hostid>...
+#
+# Starts RW mounts of all <hostid>s at once and waits until each has mounted
+# or given up.  More than one mounted is split-brain.  A host that gave up
+# must have had its mount refused with EBUSY (see refusal_problem): a crash
+# or another error is not a lost race.  None mounted is a valid outcome of
+# a round: concurrent acquirers can all yield, each seeing another's
+# PREPARE or RW record.  The race is then rerun, with starts
+# staggered randomly, up to RACE_ROUNDS times; some round must have a
+# winner.
+race_rw_mounts() {
+    local tc="$1"
+    shift
+    local hosts=("$@")
+    local round i
+
+    for ((round = 1; round <= RACE_ROUNDS; round++)); do
+        local pids=() outs=() winners=() pending=0
+
+        for i in "${!hosts[@]}"; do
+            [[ $round -gt 1 ]] && sleep "0.$((RANDOM % 10))"
+            outs[i]=$(mktemp)
+            lease_hold "${hosts[i]}" rw >"${outs[i]}" &
+            pids[i]=$!
+        done
+
+        # Same budget as start_rw_holder.
+        local deadline=$((SECONDS + LEASE_TEST_DURATION + 20))
+        while :; do
+            winners=(); pending=0
+            for i in "${!hosts[@]}"; do
+                if grep -q "^MOUNTED$" "${outs[i]}" 2>/dev/null; then
+                    winners+=("${hosts[i]}")
+                elif kill -0 "${pids[i]}" 2>/dev/null; then
+                    pending=$((pending + 1))
+                fi
+            done
+            [[ $pending -eq 0 || $SECONDS -ge $deadline ]] && break
+            sleep 0.2
+        done
+
+        local refusals=() rv problem
+        for i in "${!hosts[@]}"; do
+            if grep -q "^MOUNTED$" "${outs[i]}" 2>/dev/null ||
+                kill -0 "${pids[i]}" 2>/dev/null; then
+                continue
+            fi
+            rv=0
+            wait "${pids[i]}" 2>/dev/null || rv=$?
+            problem=$(refusal_problem "${pids[i]}" "$rv" "${outs[i]}" 0 "$EBUSY")
+            if [[ -n "$problem" ]]; then
+                refusals+=("H${hosts[i]} $problem")
+            fi
+        done
+
+        # Unmount winners cleanly; kill anything still in flight.
+        for i in "${!hosts[@]}"; do
+            if grep -q "^MOUNTED$" "${outs[i]}" 2>/dev/null; then
+                kill -TERM "${pids[i]}" 2>/dev/null || true
+            else
+                kill -KILL "${pids[i]}" 2>/dev/null || true
+            fi
+            wait "${pids[i]}" 2>/dev/null || true
+            rm -f "${outs[i]}"
+        done
+
+        if [[ ${#winners[@]} -gt 1 ]]; then
+            fail "$tc: split-brain — ${#winners[@]} hosts mounted RW simultaneously (hosts ${winners[*]})"
+            return
+        fi
+        if [[ $pending -gt 0 ]]; then
+            fail "$tc: $pending host(s) neither mounted nor gave up in round $round"
+            return
+        fi
+        if [[ ${#refusals[@]} -gt 0 ]]; then
+            problem="${refusals[0]}"
+            for i in "${refusals[@]:1}"; do
+                problem+="; $i"
+            done
+            fail "$tc: round $round: $problem"
+            return
+        fi
+        if [[ ${#winners[@]} -eq 1 ]]; then
+            pass "$tc: host ${winners[0]} won round $round of the ${#hosts[@]}-host race, no split-brain"
+            return
+        fi
+        echo "  $tc: round $round: every host yielded, retrying"
+    done
+    fail "$tc: no host won in $RACE_ROUNDS rounds"
 }
 
 # Try a single-shot RW mount (touch /pbdname/probe_file), return exit code.
