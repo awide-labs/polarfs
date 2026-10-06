@@ -4,6 +4,8 @@
  * Usage:
  *   pfs_lease_hold <cluster> <pbdname> <hostid> [rw|ro|promote]
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-delay-prepare <ms>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-delay-acquire <ms>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-suspend-acquire <ms>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-clock-offset <sec>
  *   pfs_lease_hold <cluster> <pbdname> <rw_hostid> demote <ro_hostid>
  *   pfs_lease_hold <cluster> <pbdname> <writer_hostid> corrupt-sector <target_hostid> <badmagic|badchecksum>
@@ -25,6 +27,14 @@
  *             the live-holder check and before the prepare phase, printing
  *             "PREPARE_DELAY" before the sleep and "PREPARE_RESUMED" after.
  *             Lets a test have another host acquire inside that window.
+ *             Used by Group M tests.
+ *   rw-delay-acquire — like rw-delay-prepare, but sleeps after verify and
+ *             before writing the RW record, printing "ACQUIRE_DELAY" and
+ *             "ACQUIRE_RESUMED".  Used by Group M tests.
+ *   rw-suspend-acquire — like rw-delay-acquire, but the pause emulates a
+ *             system suspend: afterwards this host's CLOCK_MONOTONIC
+ *             readings for its lease deadlines exclude the pause, as a
+ *             suspend would (CLOCK_BOOTTIME and CLOCK_REALTIME count it).
  *             Used by Group M tests.
  *   rw-clock-offset — like rw, but every timestamp this host writes into
  *             its lease record is shifted by <sec> seconds (may be
@@ -153,29 +163,83 @@ mode_rw_ro(const char *cluster, const char *pbdname, int hostid,
 
 /* ------------------------------------------------------------------ */
 
-static long g_prepare_delay_ms;
+static long g_lease_delay_ms;
+
+/* Print "<step>_DELAY", sleep g_lease_delay_ms, print "<step>_RESUMED". */
+static void
+lease_delay(const char *step)
+{
+	struct timespec ts;
+
+	printf("%s_DELAY\n", step);
+	fflush(stdout);
+	ts.tv_sec = g_lease_delay_ms / 1000;
+	ts.tv_nsec = (g_lease_delay_ms % 1000) * 1000000;
+	while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
+		;
+	printf("%s_RESUMED\n", step);
+	fflush(stdout);
+}
 
 static void
 delay_before_prepare(pfs_mount_t *mnt)
 {
-	struct timespec ts;
+	lease_delay("PREPARE");
+}
 
-	printf("PREPARE_DELAY\n");
-	fflush(stdout);
-	ts.tv_sec = g_prepare_delay_ms / 1000;
-	ts.tv_nsec = (g_prepare_delay_ms % 1000) * 1000000;
-	while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
-		;
-	printf("PREPARE_RESUMED\n");
-	fflush(stdout);
+static void
+delay_before_acquire(pfs_mount_t *mnt)
+{
+	lease_delay("ACQUIRE");
+}
+
+/* Emulated suspend time, which CLOCK_MONOTONIC does not count. */
+static int64_t g_suspended_ns;
+
+static void
+suspend_clock_hook(clockid_t clock, struct timespec *ts)
+{
+	int64_t ns;
+
+	if (clock != CLOCK_MONOTONIC)
+		return;
+	ns = (int64_t)ts->tv_sec * 1000000000 + ts->tv_nsec - g_suspended_ns;
+	ts->tv_sec = ns / 1000000000;
+	ts->tv_nsec = ns % 1000000000;
+}
+
+static void
+suspend_before_acquire(pfs_mount_t *mnt)
+{
+	lease_delay("ACQUIRE");
+	g_suspended_ns += (int64_t)g_lease_delay_ms * 1000000;
 }
 
 static int
 mode_rw_delay_prepare(const char *cluster, const char *pbdname, int hostid,
     long delay_ms)
 {
-	g_prepare_delay_ms = delay_ms;
+	g_lease_delay_ms = delay_ms;
 	pfs_rw_lease_test_before_prepare = delay_before_prepare;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static int
+mode_rw_delay_acquire(const char *cluster, const char *pbdname, int hostid,
+    long delay_ms)
+{
+	g_lease_delay_ms = delay_ms;
+	pfs_rw_lease_test_before_acquire = delay_before_acquire;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static int
+mode_rw_suspend_acquire(const char *cluster, const char *pbdname, int hostid,
+    long delay_ms)
+{
+	g_lease_delay_ms = delay_ms;
+	pfs_rw_lease_test_before_acquire = suspend_before_acquire;
+	pfs_rw_lease_test_clock_hook = suspend_clock_hook;
 	return mode_rw_ro(cluster, pbdname, hostid, "rw");
 }
 
@@ -1089,6 +1153,28 @@ main(int argc, char *argv[])
 			return 1;
 		}
 		return mode_rw_delay_prepare(cluster, pbdname, hostid,
+		    atol(argv[5]));
+	}
+
+	if (strcmp(mode, "rw-suspend-acquire") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-suspend-acquire <ms>\n");
+			return 1;
+		}
+		return mode_rw_suspend_acquire(cluster, pbdname, hostid,
+		    atol(argv[5]));
+	}
+
+	if (strcmp(mode, "rw-delay-acquire") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-delay-acquire <ms>\n");
+			return 1;
+		}
+		return mode_rw_delay_acquire(cluster, pbdname, hostid,
 		    atol(argv[5]));
 	}
 

@@ -25,6 +25,11 @@
 #        (lower ballot) completes acquisition and mounts RW meanwhile.  When
 #        H12 resumes, its higher ballot must not let it mount next to H11.
 #
+# TC-M6: A host stalled between verify and acquire cannot mount.  H12
+#        passes verify and pauses before acquire until its PREPARE has
+#        expired; H11 (lower ballot) mounts.  When H12 resumes, it must not
+#        mount next to H11.
+#
 # TC-M7: Holder clock ahead of the reader.  H11 writes timestamps 3s in the
 #        reader's future; H12 must still see H11 as live and be refused.
 #
@@ -32,6 +37,10 @@
 #        timestamps lag by LEASE_TEST_DURATION seconds, so its record looks
 #        at least a lease duration old right after each renewal.  H12 runs
 #        with paxos_clock_skew_max=LEASE_TEST_DURATION and must be refused.
+#
+# TC-M9: Same as TC-M6, but H12's pause emulates a system suspend, which
+#        CLOCK_MONOTONIC does not count.  H12 must still see that its
+#        PREPARE has expired and not mount next to H11.
 
 source "$(dirname "$0")/common.sh"
 
@@ -161,6 +170,71 @@ else
     fi
 fi
 
+# Shared by TC-M5, TC-M6 and TC-M9: a "late" host H<late> runs
+# pfs_lease_hold in a delay mode (pid $late_pid, stdout in $late_out) and
+# pauses at <STEP>_DELAY while H<holder> mounts RW (HOLDER_PID).  Checks
+# that the late host's mount is refused with EBUSY once it resumes, having
+# logged every <pattern> after byte <log_offset> of $PFS_LOG (see
+# refusal_problem), and that the holder keeps the lease.
+# Usage: check_late_host <tc> <STEP> <late> <late_pid> <late_out> <holder>
+#                        <budget_s> <log_offset> <pattern>...
+check_late_host() {
+    local tc="$1" step="$2" late="$3" late_pid="$4" late_out="$5"
+    local holder="$6" budget="$7" offset="$8"
+    shift 8
+    local problem
+
+    if grep -q "^${step}_RESUMED$" "$late_out" 2>/dev/null; then
+        fail "$tc: inconclusive — H${late} resumed before H${holder} finished mounting (raise the delay)"
+        return
+    fi
+
+    local late_rv=""
+    local deadline=$((SECONDS + budget))
+    while [[ $SECONDS -lt $deadline ]]; do
+        if grep -q "^MOUNTED$" "$late_out" 2>/dev/null; then
+            break
+        fi
+        if ! kill -0 "$late_pid" 2>/dev/null; then
+            late_rv=0
+            wait "$late_pid" 2>/dev/null || late_rv=$?
+            break
+        fi
+        sleep 0.2
+    done
+
+    if grep -q "^MOUNTED$" "$late_out" 2>/dev/null; then
+        fail "$tc: split-brain — H${late} mounted RW while H${holder} holds the lease"
+        return
+    elif [[ -z "$late_rv" ]]; then
+        fail "$tc: H${late} neither mounted nor exited after its delay"
+        return
+    elif ! kill -0 "$HOLDER_PID" 2>/dev/null; then
+        fail "$tc: H${holder} lost its RW mount"
+        return
+    fi
+
+    problem=$(refusal_problem "$late_pid" "$late_rv" "$late_out" "$offset" \
+        "$EBUSY" "$@")
+    if [[ -n "$problem" ]]; then
+        fail "$tc: H${late} did not mount, but $problem"
+    else
+        pass "$tc: H${late} refused (errno $EBUSY), H${holder} keeps the lease"
+    fi
+}
+
+# Wait up to <budget_s> for "<STEP>_DELAY" in <out> while <pid> is alive.
+wait_for_delay() {
+    local step="$1" pid="$2" out="$3" budget="$4"
+    local deadline=$((SECONDS + budget))
+    while [[ $SECONDS -lt $deadline ]]; do
+        grep -q "^${step}_DELAY$" "$out" 2>/dev/null && return 0
+        kill -0 "$pid" 2>/dev/null || return 1
+        sleep 0.2
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # TC-M5: Late higher-ballot host cannot take over an established holder
 # ---------------------------------------------------------------------------
@@ -171,64 +245,65 @@ echo "TC-M5: late higher-ballot host blocked by established holder"
 # than H11's (1*254+11).  H12 runs in rw-delay-prepare mode: it sleeps
 # after its live-holder check (no holder yet) and before writing its
 # prepare.  H11 mounts during that window.
-M5_LOW=11
-M5_HIGH=12
 M5_DELAY_MS=15000
 m5_out=$(mktemp)
+m5_log=$(log_offset)
 
-lease_hold "$M5_HIGH" rw-delay-prepare "$M5_DELAY_MS" >"$m5_out" &
-M5_HIGH_PID=$!
+lease_hold 12 rw-delay-prepare "$M5_DELAY_MS" >"$m5_out" &
+M5_PID=$!
 
-# Wait for H12 to pass its live-holder check and enter the delay.
-m5_paused=0
-deadline=$((SECONDS + LEASE_TEST_DURATION + 20))
-while [[ $SECONDS -lt $deadline ]]; do
-    if grep -q "^PREPARE_DELAY$" "$m5_out" 2>/dev/null; then
-        m5_paused=1
-        break
-    fi
-    kill -0 "$M5_HIGH_PID" 2>/dev/null || break
-    sleep 0.2
-done
-
-if [[ $m5_paused -ne 1 ]]; then
-    fail "TC-M5: H${M5_HIGH} never reached the pre-prepare delay"
-elif ! start_rw_holder "$M5_LOW"; then
-    fail "TC-M5: H${M5_LOW} could not mount RW while H${M5_HIGH} was paused"
-elif grep -q "^PREPARE_RESUMED$" "$m5_out" 2>/dev/null; then
-    stop_holder
-    fail "TC-M5: inconclusive — H${M5_HIGH} resumed before H${M5_LOW} finished mounting (raise M5_DELAY_MS)"
+if ! wait_for_delay PREPARE "$M5_PID" "$m5_out" $((LEASE_TEST_DURATION + 20)); then
+    fail "TC-M5: H12 never reached the pre-prepare delay"
+elif ! start_rw_holder 11; then
+    fail "TC-M5: H11 could not mount RW while H12 was paused"
 else
-    # H11 holds the lease.  Let H12 resume and see whether it mounts.
-    m5_high_rv=""
-    deadline=$((SECONDS + M5_DELAY_MS / 1000 + LEASE_TEST_DURATION + 20))
-    while [[ $SECONDS -lt $deadline ]]; do
-        if grep -q "^MOUNTED$" "$m5_out" 2>/dev/null; then
-            break
-        fi
-        if ! kill -0 "$M5_HIGH_PID" 2>/dev/null; then
-            m5_high_rv=0
-            wait "$M5_HIGH_PID" 2>/dev/null || m5_high_rv=$?
-            break
-        fi
-        sleep 0.2
-    done
-
-    if grep -q "^MOUNTED$" "$m5_out" 2>/dev/null; then
-        fail "TC-M5: split-brain — H${M5_HIGH} mounted RW while H${M5_LOW} holds the lease"
-    elif [[ -z "$m5_high_rv" ]]; then
-        fail "TC-M5: H${M5_HIGH} neither mounted nor exited after its delay"
-    elif ! kill -0 "$HOLDER_PID" 2>/dev/null; then
-        fail "TC-M5: H${M5_LOW} lost its RW mount"
-    else
-        pass "TC-M5: H${M5_HIGH} rejected (exit $m5_high_rv), H${M5_LOW} keeps the lease"
-    fi
+    check_late_host TC-M5 PREPARE 12 "$M5_PID" "$m5_out" 11 \
+        $((M5_DELAY_MS / 1000 + LEASE_TEST_DURATION + 20)) "$m5_log" \
+        'rw_lease_verify_prepare: host 11 holds fresh RW lease'
     stop_holder
 fi
 
-kill -TERM "$M5_HIGH_PID" 2>/dev/null || true
-wait "$M5_HIGH_PID" 2>/dev/null || true
+kill -TERM "$M5_PID" 2>/dev/null || true
+wait "$M5_PID" 2>/dev/null || true
 rm -f "$m5_out"
+
+# ---------------------------------------------------------------------------
+# TC-M6: Host stalled between verify and acquire cannot mount
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-M6: host stalled after verify cannot mount once its prepare expired"
+
+# H12 (higher ballot) prepares and passes verify, then sleeps before writing
+# its RW record.  Once its PREPARE is past the expiry age
+# (LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 1), H11 ignores it as stale
+# and mounts.  When H12 resumes, its acquire and conflict check see only
+# H11's lower ballot; it must still not mount.
+m6_stale=$(( LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 2 ))
+M6_DELAY_MS=$(( (m6_stale + 25) * 1000 ))
+m6_out=$(mktemp)
+m6_log=$(log_offset)
+
+lease_hold 12 rw-delay-acquire "$M6_DELAY_MS" >"$m6_out" &
+M6_PID=$!
+
+if ! wait_for_delay ACQUIRE "$M6_PID" "$m6_out" $((LEASE_TEST_DURATION + 20)); then
+    fail "TC-M6: H12 never reached the pre-acquire delay"
+else
+    echo "  Waiting ${m6_stale}s for H12's prepare to expire..."
+    sleep "$m6_stale"
+    if ! start_rw_holder 11; then
+        fail "TC-M6: H11 could not mount RW after H12's prepare expired"
+    else
+        check_late_host TC-M6 ACQUIRE 12 "$M6_PID" "$m6_out" 11 \
+            $((M6_DELAY_MS / 1000 + LEASE_TEST_DURATION + 20)) "$m6_log" \
+            'rw_lease: host_id=12 prepare expired before acquire completed'
+        stop_holder
+    fi
+fi
+
+kill -TERM "$M6_PID" 2>/dev/null || true
+wait "$M6_PID" 2>/dev/null || true
+rm -f "$m6_out"
 
 # ---------------------------------------------------------------------------
 # TC-M7: Holder clock ahead of the reader
@@ -269,5 +344,40 @@ else
     stop_holder
 fi
 rm -f "$m8_conf"
+
+# ---------------------------------------------------------------------------
+# TC-M9: Host suspended between verify and acquire cannot mount
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-M9: host suspended after verify cannot mount once its prepare expired"
+
+# As TC-M6, with rw-suspend-acquire instead of rw-delay-acquire: H12's own
+# deadline clock must count the emulated suspend.
+m9_stale=$(( LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 2 ))
+M9_DELAY_MS=$(( (m9_stale + 25) * 1000 ))
+m9_out=$(mktemp)
+m9_log=$(log_offset)
+
+lease_hold 12 rw-suspend-acquire "$M9_DELAY_MS" >"$m9_out" &
+M9_PID=$!
+
+if ! wait_for_delay ACQUIRE "$M9_PID" "$m9_out" $((LEASE_TEST_DURATION + 20)); then
+    fail "TC-M9: H12 never reached the pre-acquire suspend"
+else
+    echo "  Waiting ${m9_stale}s for H12's prepare to expire..."
+    sleep "$m9_stale"
+    if ! start_rw_holder 11; then
+        fail "TC-M9: H11 could not mount RW after H12's prepare expired"
+    else
+        check_late_host TC-M9 ACQUIRE 12 "$M9_PID" "$m9_out" 11 \
+            $((M9_DELAY_MS / 1000 + LEASE_TEST_DURATION + 20)) "$m9_log" \
+            'rw_lease: host_id=12 prepare expired before acquire completed'
+        stop_holder
+    fi
+fi
+
+kill -TERM "$M9_PID" 2>/dev/null || true
+wait "$M9_PID" 2>/dev/null || true
+rm -f "$m9_out"
 
 lease_test_summary

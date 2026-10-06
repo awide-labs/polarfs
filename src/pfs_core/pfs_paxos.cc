@@ -63,6 +63,7 @@ PFS_OPTION_REG(paxos_clock_skew_max,       paxos_check_ival_nonneg);
 
 #ifdef PFS_TEST
 void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
+void (*pfs_rw_lease_test_before_acquire)(pfs_mount_t *mnt);
 int64_t pfs_rw_lease_test_clock_offset;
 void (*pfs_rw_lease_test_clock_hook)(clockid_t clock, struct timespec *ts);
 #endif
@@ -131,6 +132,21 @@ static bool
 host_record_live(uint64_t ts, const struct timespec *now)
 {
 	return host_record_age(ts, now) < lease_expiry_age();
+}
+
+/*
+ * Whether paxos_lease_duration has passed since a lease write of ours was
+ * issued at *issue (LEASE_CLOCK).  From then on other hosts may treat that
+ * record as expired (see host_record_live()).
+ */
+static bool
+lease_write_expired(const struct timespec *issue)
+{
+	struct timespec now;
+
+	lease_clock_now(&now);
+	return timespec_diff_ns(&now, issue) >=
+	    paxos_lease_duration * 1000000000;
 }
 
 /* forward declarations: static helpers defined later in this file */
@@ -564,13 +580,16 @@ pfs_leader_load(pfs_mount_t *mnt)
 		 * prepare → verify → acquire → conflict-check.
 		 * Ballot-based arbitration handles concurrent acquires.
 		 * If verify_prepare finds a live RW holder or a higher
-		 * ballot, we fail immediately with -EBUSY.
+		 * ballot, we fail immediately with -EBUSY.  Each step must
+		 * complete before our previous record can expire for other
+		 * hosts, or we give up with -EBUSY.
 		 */
 		rv = pfs_rw_lease_prepare(mnt);
 		if (rv < 0) {
 			pfs_host_record_clear(mnt, mnt->mnt_host_id);
 			return rv;
 		}
+		struct timespec prepare_issue = mnt->mnt_lease_write_time;
 
 		rv = pfs_rw_lease_verify_prepare(mnt);
 		if (rv < 0) {
@@ -578,12 +597,44 @@ pfs_leader_load(pfs_mount_t *mnt)
 			return rv;
 		}
 
+#ifdef PFS_TEST
+		if (pfs_rw_lease_test_before_acquire)
+			pfs_rw_lease_test_before_acquire(mnt);
+#endif
+
 		rv = pfs_rw_lease_acquire(mnt);
 		if (rv < 0)
 			return rv;
 
+		/*
+		 * Our RW record must land while our PREPARE is still live to
+		 * every other host.  If we stalled until it expired, another
+		 * host may have ignored it and acquired, possibly with a lower
+		 * ballot that check_conflict would let us override.
+		 */
+		if (lease_write_expired(&prepare_issue)) {
+			pfs_etrace("rw_lease: host_id=%u prepare expired "
+			    "before acquire completed, giving up\n",
+			    mnt->mnt_host_id);
+			pfs_host_record_clear(mnt, mnt->mnt_host_id);
+			return -EBUSY;
+		}
+
 		rv = pfs_rw_lease_check_conflict(mnt);
 		if (rv == -EBUSY) {
+			pfs_host_record_clear(mnt, mnt->mnt_host_id);
+			return -EBUSY;
+		}
+
+		/*
+		 * Likewise our RW record must still be live when the conflict
+		 * check completes.  From here the kill timer, armed from the
+		 * same write, fences us if we stall.
+		 */
+		if (lease_write_expired(&mnt->mnt_lease_write_time)) {
+			pfs_etrace("rw_lease: host_id=%u RW record expired "
+			    "before conflict check completed, giving up\n",
+			    mnt->mnt_host_id);
 			pfs_host_record_clear(mnt, mnt->mnt_host_id);
 			return -EBUSY;
 		}
@@ -943,13 +994,22 @@ int
 pfs_rw_lease_prepare(pfs_mount_t *mnt)
 {
 	pfs_host_record_t hr;
-	struct timespec now;
+	struct timespec issue, now;
 	uint64_t ballot;
 	int rv;
 
 	ballot = pfs_ballot_generate(mnt);
 	mnt->mnt_current_ballot = ballot;
 
+	/*
+	 * Read LEASE_CLOCK first, so the deadline lease_write_expired() checks
+	 * (paxos_lease_duration after this reading) comes no later than
+	 * paxos_lease_duration after the CLOCK_REALTIME reading below.  The
+	 * record holds that reading truncated to whole seconds, so the
+	 * deadline can be up to 1s past timestamp + paxos_lease_duration;
+	 * host_record_live() allows for that second.
+	 */
+	lease_clock_now(&issue);
 	clock_gettime(CLOCK_REALTIME, &now);
 
 	memset(&hr, 0, sizeof(hr));
@@ -963,6 +1023,8 @@ pfs_rw_lease_prepare(pfs_mount_t *mnt)
 	hr.hr_checksum   = host_record_checksum(&hr);
 
 	rv = pfs_host_record_write(mnt, &hr);
+	if (rv == 0)
+		mnt->mnt_lease_write_time = issue;
 	if (rv < 0) {
 		pfs_etrace("rw_lease_prepare: write failed host_id=%u "
 		    "ballot=%llu rv=%d\n",
@@ -1073,7 +1135,10 @@ pfs_rw_lease_verify_prepare(pfs_mount_t *mnt)
  * Each clears its sector, so a retry can win.
  *
  * Returns:
- *   0      — we have the highest ballot; we hold the lease
+ *   0      — no fresh record of another host has a higher ballot.  That
+ *             does not make us the holder yet: pfs_leader_load still checks
+ *             that our RW record has not expired, and gives the lease back
+ *             if it has.
  *  -EBUSY  — a higher-ballot host acquired concurrently; caller must clear
  *             our sector and abort the mount
  */

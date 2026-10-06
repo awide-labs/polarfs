@@ -144,6 +144,8 @@ void	paxos_watchdog_close(pfs_mount_t *mnt);
  * live-holder check and before the prepare phase.
  */
 extern void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
+/* libpfs_test only: if set, called after verify_prepare, before acquire. */
+extern void (*pfs_rw_lease_test_before_acquire)(pfs_mount_t *mnt);
 /*
  * libpfs_test only: if set, may adjust each reading of the clock a host uses
  * for its own lease deadlines (clock says which one), e.g. to emulate time
