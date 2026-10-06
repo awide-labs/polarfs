@@ -18,6 +18,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 typedef struct pfs_mount 		pfs_mount_t;
 
@@ -119,6 +120,7 @@ static_assert(sizeof(pfs_host_record_t) == 512,
     "pfs_host_record_t must be exactly 512 bytes");
 
 int64_t	pfs_paxos_lease_duration(void);
+int64_t	pfs_paxos_clock_skew_max(void);
 int	pfs_rw_lease_prepare(pfs_mount_t *mnt);
 int	pfs_rw_lease_verify_prepare(pfs_mount_t *mnt);
 int	pfs_rw_lease_acquire(pfs_mount_t *mnt);
@@ -142,6 +144,15 @@ void	paxos_watchdog_close(pfs_mount_t *mnt);
  * live-holder check and before the prepare phase.
  */
 extern void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
+/*
+ * libpfs_test only: if set, may adjust each reading of the clock a host uses
+ * for its own lease deadlines (clock says which one), e.g. to emulate time
+ * that clock did not count.
+ */
+extern void (*pfs_rw_lease_test_clock_hook)(clockid_t clock,
+    struct timespec *ts);
+/* libpfs_test only: seconds added to the timestamps we write (fake skew). */
+extern int64_t pfs_rw_lease_test_clock_offset;
 #endif
 
 #endif

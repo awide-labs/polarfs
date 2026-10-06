@@ -118,6 +118,7 @@ typedef struct pfs_mount {
 	uint64_t	mnt_current_ballot;	/* set during prepare, used through acquire+conflict */
 	std::atomic<bool>	mnt_rw_lease_held;	/* true after pfs_rw_lease_acquire() */
 	timer_t		mnt_kill_timer;		/* POSIX timer for lease watchdog */
+	struct timespec	mnt_lease_write_time;	/* LEASE_CLOCK when our last lease write was issued */
 	bool		mnt_kill_timer_armed;
 	int		mnt_wdog_fd;		/* /dev/watchdog fd, -1 if disabled */
 

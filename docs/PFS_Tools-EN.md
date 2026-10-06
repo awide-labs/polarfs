@@ -214,23 +214,25 @@ $sudo pfs -C disk dumple -t 2 -i 2048 nvme1n1
 $sudo pfs -C disk lease nvme1n1
 === RW Lease Status for nvme1n1 ===
 lease_duration: 30s
+clock_skew_max: 2s
 current_time:   1774095239 (2026-03-21 14:13:59)
 num_hosts:      30
 max_hosts:      254
 
 host 1    flags=RW          gen=3     ballot=91
           timestamp=1774095238 (2026-03-21 14:13:58)  age=1s
-          STATUS: ** ACTIVE RW HOLDER (expires in 29s) **
+          STATUS: ** ACTIVE RW HOLDER (expires in 32s) **
 ```
 
 - Output fields:
    - `lease_duration`: the configured lease duration in seconds (from `paxos_lease_duration`).
+   - `clock_skew_max`: the maximum assumed difference between hosts' clocks in seconds (from `paxos_clock_skew_max`, default 2). Other hosts treat a lease record as live until it is `lease_duration + clock_skew_max + 1` seconds old by their own clock.
    - `flags`: `RW` indicates the host holds or held an RW lease; `PREPARE` indicates the host is in the ballot prepare phase.
    - `gen`: mount generation counter (increments on crash, resets on clean unmount).
    - `ballot`: Paxos ballot number used for arbitration.
    - `timestamp`: epoch seconds of the last lease renewal (`CLOCK_REALTIME`).
    - `age`: seconds since the last renewal.
-   - `STATUS`: `ACTIVE RW HOLDER` with expiry countdown if the lease is live, `expired` with age if stale, or `prepare phase` if in ballot negotiation.
+   - `STATUS`: `ACTIVE RW HOLDER` with expiry countdown (to `lease_duration + clock_skew_max + 1` seconds of age) if the lease is live, `expired` with age if stale, or `prepare phase` if in ballot negotiation.
    - Empty host sectors (never used or cleanly released) are omitted.
 
 # 2. File&Directory-Related Commands

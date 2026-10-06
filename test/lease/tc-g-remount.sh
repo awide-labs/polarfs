@@ -226,7 +226,7 @@ for ((round = 1; round <= RACE_ROUNDS; round++)); do
 
     # Wait until each promotion has succeeded or failed.  Budget as in
     # trigger_promote.
-    deadline=$((SECONDS + LEASE_TEST_DURATION + 25))
+    deadline=$((SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 26))
     while :; do
         winners=(); loser_hostids=(); refusals=(); pending=0
         for i in "${!g4_hosts[@]}"; do

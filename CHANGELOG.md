@@ -28,6 +28,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   tracking code existed but the allocation paths bypassed it. All client
   allocations are now tracked (XCOM-188)
 
+- Fixed incorrect detection of a failed host when hosts' clocks differed.
+  The new `paxos_clock_skew_max` setting allows for clock differences of up
+  to 2 seconds by default. With default settings, takeover after a host
+  failure includes an additional 3-second safety margin. `pfs lease` shows
+  the updated time remaining before takeover. The lease watchdog now also
+  counts time spent in system suspend (XCOM-202)
+
 ### Performance
 
 - `devstat` and `mountstat` statistics modules significantly slowed down
