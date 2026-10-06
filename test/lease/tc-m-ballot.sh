@@ -24,6 +24,14 @@
 #        H12 passes the live-holder check and pauses before prepare; H11
 #        (lower ballot) completes acquisition and mounts RW meanwhile.  When
 #        H12 resumes, its higher ballot must not let it mount next to H11.
+#
+# TC-M7: Holder clock ahead of the reader.  H11 writes timestamps 3s in the
+#        reader's future; H12 must still see H11 as live and be refused.
+#
+# TC-M8: Holder clock behind the reader within paxos_clock_skew_max.  H11's
+#        timestamps lag by LEASE_TEST_DURATION seconds, so its record looks
+#        at least a lease duration old right after each renewal.  H12 runs
+#        with paxos_clock_skew_max=LEASE_TEST_DURATION and must be refused.
 
 source "$(dirname "$0")/common.sh"
 
@@ -221,5 +229,45 @@ fi
 kill -TERM "$M5_HIGH_PID" 2>/dev/null || true
 wait "$M5_HIGH_PID" 2>/dev/null || true
 rm -f "$m5_out"
+
+# ---------------------------------------------------------------------------
+# TC-M7: Holder clock ahead of the reader
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-M7: holder clock 3s ahead — holder still blocks"
+
+if ! start_rw_holder 11 rw-clock-offset 3; then
+    fail "TC-M7: H11 could not mount RW with clock offset +3s"
+else
+    sleep 2   # let H11 renew
+    expect_mount_refused TC-M7 12 "H11 (clock +3s) holds the lease" "$EBUSY" \
+        'rw_lease_check: BUSY - host 11 holds live RW lease' \
+        -- rw
+    stop_holder
+fi
+
+# ---------------------------------------------------------------------------
+# TC-M8: Holder clock behind the reader, within paxos_clock_skew_max
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-M8: holder clock ${LEASE_TEST_DURATION}s behind, reader allows that skew — holder still blocks"
+
+m8_skew=$LEASE_TEST_DURATION
+m8_conf=$(mktemp /tmp/pfs-lease-test-conf.XXXXXX)
+sed "s/^paxos_clock_skew_max=.*/paxos_clock_skew_max=${m8_skew}/" \
+    "$LEASE_TEST_CONF" >"$m8_conf"
+
+if ! start_rw_holder 11 rw-clock-offset "-${m8_skew}"; then
+    fail "TC-M8: H11 could not mount RW with clock offset -${m8_skew}s"
+else
+    sleep 2   # let H11 renew
+    # The skew= field shows H12 picked up its own paxos_clock_skew_max.
+    PFS_CONFIG_PATH="$m8_conf" expect_mount_refused TC-M8 12 \
+        "H11 (clock -${m8_skew}s) holds the lease" "$EBUSY" \
+        "rw_lease_check: BUSY - host 11 holds live RW lease .*skew=${m8_skew}s" \
+        -- rw
+    stop_holder
+fi
+rm -f "$m8_conf"
 
 lease_test_summary
