@@ -47,8 +47,6 @@
 #include "pfs_option.h"
 
 
-#define	PFS_MAX_DISKS		4
-
 static int64_t paxos_lease_duration      = 30; /* seconds until another host may steal RW */
 static int64_t paxos_watchdog_enable     = 0;  /* 0=disabled, 1=enable /dev/watchdog */
 static int64_t paxos_clock_skew_max      = 2;  /* max CLOCK_REALTIME difference between hosts, seconds */
@@ -191,9 +189,6 @@ pfs_ballot_generate(pfs_mount_t *mnt)
 #define	leader_record_in(a, b)	(*(b) = *(a))
 #define	leader_record_out(a, b)	(*(b) = *(a))
 
-#define	request_record_in(a, b)	(*(a) = *(b))
-#define	request_record_out(a, b) (*(b) = *(a))
-
 #define	cpu_to_le32(a)		(a)
 
 static inline int
@@ -206,36 +201,6 @@ direct_align(size_t sector_size)
 		return 4 * 1024 * 1024;
 
 	return -EINVAL;
-}
-
-static uint64_t
-monotime(void)
-{
-	struct timespec ts;
-
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ts.tv_sec;
-}
-
-int
-get_rand(int a, int b)
-{
-#if notyet
-#endif
-	return -1;
-}
-
-static uint32_t
-roundup_power_of_two(uint32_t val)
-{
-	val--;
-	val |= val >> 1;
-	val |= val >> 2;
-	val |= val >> 4;
-	val |= val >> 8;
-	val |= val >> 16;
-	val++;
-	return val;
 }
 
 static int
@@ -340,7 +305,6 @@ read_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr, uint32_t *checksum)
 static int
 verify_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr, uint32_t checksum)
 {
-	struct pfs_leader_record leader_rr;
 	int result;
 
 	if (lr->magic == PFS_LEADER_CLEAR)
