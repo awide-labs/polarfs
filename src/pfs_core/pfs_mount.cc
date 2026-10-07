@@ -2027,45 +2027,50 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 	 */
 	err = pfs_leader_load(mnt);
 	if (err < 0) {
-		if (err == -EBUSY) {
-			/*
-			 * Another host holds the RW lease.  Restore this
-			 * mount to RO so the caller receives a proper EBUSY
-			 * error without the process terminating.
-			 */
+		/*
+		 * We do not hold the RW lease: every failure of pfs_leader_load
+		 * leaves mnt_rw_lease_held false and no kill timer armed.
+		 * Another host may hold the lease (-EBUSY), or we gave it back
+		 * because we could not arm the kill timer; a record of ours left
+		 * behind by an I/O error is never renewed and expires.  Restore
+		 * this mount to RO so the caller receives the error without the
+		 * process terminating.  If the device itself has failed, the RO
+		 * reload fails too.
+		 */
+		if (err == -EBUSY)
 			pfs_etrace("remount RW blocked by live RW lease holder, "
 			    "restoring RO mount\n");
-			pfs_leader_unload(mnt);
-			mnt->mnt_host_id = saved_host_id;
-			mnt->mnt_flags = saved_flags;
-			if (pfs_leader_load(mnt) < 0) {
-				pfs_etrace("RO reload after EBUSY failed, "
-				    "unrecoverable\n");
-				exit(EIO);
-			}
-			pfs_log_resume(&mnt->mnt_log);
-			/*
-			 * The poll thread was stopped at the start of
-			 * pfs_remount_rw.  Do not restart it here — the mount
-			 * is being restored to RO only so the caller can
-			 * receive a proper EBUSY error and then call
-			 * pfs_umount/pfs_mount_release cleanly.
-			 * pfs_poll_stop in pfs_umount is safe when poll_tid=0.
-			 */
-			pfs_notify_inited(mnt);
-			mountentry_wrunlock(me);
-
-			mnt = pfs_get_mount(pbdname);
-			if (mnt != NULL) {
-				mnt->mnt_admin = pfs_admin_init(pbdname);
-				pfs_put_mount(mnt);
-			}
-
-			errno = EBUSY;
-			return -EBUSY;
+		else
+			pfs_etrace("remount RW failed, err=%d, restoring RO "
+			    "mount\n", err);
+		pfs_leader_unload(mnt);
+		mnt->mnt_host_id = saved_host_id;
+		mnt->mnt_flags = saved_flags;
+		if (pfs_leader_load(mnt) < 0) {
+			pfs_etrace("RO reload after failed RW remount failed, "
+			    "unrecoverable\n");
+			exit(EIO);
 		}
-		pfs_etrace("load paxos file failed, err=%d\n", err);
-		exit(EIO);
+		pfs_log_resume(&mnt->mnt_log);
+		/*
+		 * The poll thread was stopped at the start of
+		 * pfs_remount_rw.  Do not restart it here — the mount
+		 * is being restored to RO only so the caller can
+		 * receive the error and then call
+		 * pfs_umount/pfs_mount_release cleanly.
+		 * pfs_poll_stop in pfs_umount is safe when poll_tid=0.
+		 */
+		pfs_notify_inited(mnt);
+		mountentry_wrunlock(me);
+
+		mnt = pfs_get_mount(pbdname);
+		if (mnt != NULL) {
+			mnt->mnt_admin = pfs_admin_init(pbdname);
+			pfs_put_mount(mnt);
+		}
+
+		errno = -err;
+		return err;
 	}
 
 	pfs_log_resume(&mnt->mnt_log);
@@ -2100,7 +2105,7 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 		//between mountentry_unlock and pfs_get_mount, it is unmounted.
 		pfs_etrace("cant get mount %s\n", pbdname);
 		errno = ENODEV;
-		return -1;
+		return -ENODEV;
 	}
 
 	err = pfs_orphans_reclaim(mnt);
@@ -2292,6 +2297,31 @@ pfs_host_get_another_wrid()
 	return -1;
 }
 
+/*
+ * Describe a negative error returned by pfs_mount, pfs_remount_rw and
+ * pfs_leader_load: an errno or one of the paxos codes from pfs_paxos.h.
+ * pfs_mount and pfs_remount store such a code, negated, in errno.
+ */
+const char *
+pfs_mount_strerror(int err)
+{
+	switch (err) {
+	case PFS_AIO_TIMEOUT:        return "paxos I/O timed out";
+	case PFS_LEADER_EMAGIC:      return "bad leader magic";
+	case PFS_LEADER_EVERSION:    return "bad leader version";
+	case PFS_LEADER_ESECTORSIZE: return "sector size mismatch";
+	case PFS_LEADER_ENUMHOSTS:   return "host_id exceeds num_hosts (check -H flag)";
+	case PFS_LEADER_ECHECKSUM:   return "leader checksum mismatch";
+	case -ENODEV:  return "device not found";
+	case -ENOMEM:  return "out of memory";
+	case -EIO:     return "I/O error";
+	case -EINVAL:  return "invalid argument";
+	case -EPERM:   return "permission denied";
+	case -EBUSY:   return "device busy (RW lease held by another host)";
+	default:       return strerror(-err);
+	}
+}
+
 int
 pfs_mount_acquire(const char *cluster, const char *pbdname, int host_id,
     int flags)
@@ -2341,7 +2371,9 @@ pfs_mount_acquire(const char *cluster, const char *pbdname, int host_id,
 
 		ret = pfs_remount_rw(pbdname, host_id, flags);
 		if (ret != 0) {
-			pfs_etrace("pfs_remount_rw failed %s for host %d, %s\n", pbdname, host_id, strerror(errno));
+			pfs_etrace("pfs_remount_rw failed %s for host %d, %s "
+			    "(err=%d)\n", pbdname, host_id,
+			    pfs_mount_strerror(ret), ret);
 			pfs_host_decref(host_id);
 			//This must not be the first mount. So we do not need
 			//umount.

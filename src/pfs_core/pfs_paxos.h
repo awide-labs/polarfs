@@ -133,7 +133,7 @@ int	pfs_host_record_read(pfs_mount_t *mnt, uint32_t host_id,
 int	pfs_check_host_sector(pfs_mount_t *mnt, uint32_t host_id);
 int	pfs_rw_lease_renew(pfs_mount_t *mnt);
 void	pfs_rw_lease_release(pfs_mount_t *mnt);
-void	paxos_watchdog_open(pfs_mount_t *mnt);
+int	paxos_watchdog_open(pfs_mount_t *mnt);
 void	paxos_watchdog_pet(pfs_mount_t *mnt);
 void	paxos_watchdog_close(pfs_mount_t *mnt);
 
@@ -160,6 +160,12 @@ extern void (*pfs_rw_lease_test_clock_hook)(clockid_t clock,
     struct timespec *ts);
 /* libpfs_test only: seconds added to the timestamps we write (fake skew). */
 extern int64_t pfs_rw_lease_test_clock_offset;
+/*
+ * libpfs_test only: if set, called before the lease kill timer is created
+ * (create = true) and before each time it is armed (create = false); a
+ * negative errno fails that call instead.
+ */
+extern int (*pfs_rw_lease_test_kill_timer_hook)(bool create);
 #endif
 
 #endif
