@@ -22,6 +22,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Takeover after a host failure now waits `paxos_clock_skew_max` + 1
   seconds longer: 33 seconds instead of 30 with default settings.
   `pfs lease` shows the new time remaining (XCOM-202)
+- Read-write mounts, including promotions of read-only mounts, now fail
+  if PolarFS cannot start its lease watchdog; previously they went ahead
+  without it (XCOM-202)
 
 ### Fixed
 

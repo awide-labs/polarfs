@@ -119,12 +119,35 @@ assert_log_contains() {
 }
 
 # errno values pfs_lease_hold reports as MOUNT_FAILED:<errno>.
+ENOMEM=12
 EBUSY=16
+EINVAL=22
 
-# Current size of $PFS_LOG: pass it to refusal_problem as <log_offset> to
-# look only at what is logged from now on.
+# Current size of $PFS_LOG: pass it to refusal_problem or main_log_problem
+# as <log_offset> to look only at what is logged from now on.
 log_offset() {
     stat -c %s "$PFS_LOG" 2>/dev/null || echo 0
+}
+
+# main_log_problem <pid> <log_offset> <pattern>...
+#
+# Checks that the lines the main thread of process <pid> logged after byte
+# <log_offset> of $PFS_LOG match every extended regex <pattern>.  Prints
+# the first pattern not matched, or nothing.
+main_log_problem() {
+    local pid="$1" offset="$2"
+    shift 2
+    local lines pat
+
+    # Log lines carry the writing thread's id; the main thread's is the pid.
+    lines=$(tail -c +"$((offset + 1))" "$PFS_LOG" 2>/dev/null |
+        grep -F "[$pid] ") || true
+    for pat in "$@"; do
+        if ! grep -qE -- "$pat" <<<"$lines"; then
+            echo "it did not log /$pat/"
+            return
+        fi
+    done
 }
 
 # refusal_problem <pid> <rv> <out> <log_offset> <errno> <pattern>...
@@ -138,7 +161,7 @@ log_offset() {
 refusal_problem() {
     local pid="$1" rv="$2" out="$3" offset="$4" errno="$5"
     shift 5
-    local got lines pat
+    local got
 
     if [[ "$rv" -ne 2 ]]; then
         echo "exited with status $rv, expected 2 (mount failed)"
@@ -149,15 +172,7 @@ refusal_problem() {
         echo "mount failed with errno ${got:-<none>}, expected $errno"
         return
     fi
-    # Log lines carry the writing thread's id; the main thread's is the pid.
-    lines=$(tail -c +"$((offset + 1))" "$PFS_LOG" 2>/dev/null |
-        grep -F "[$pid] ") || true
-    for pat in "$@"; do
-        if ! grep -qE -- "$pat" <<<"$lines"; then
-            echo "it did not log /$pat/"
-            return
-        fi
-    done
+    main_log_problem "$pid" "$offset" "$@"
 }
 
 # expect_mount_refused <tc> <hostid> <what> <errno> <pattern>... -- <mode> [args…]
@@ -572,7 +587,8 @@ start_watchdog_stall_holder() {
 
 # Send SIGUSR1 to the watchdog-stall holder (suspends log, stops petting).
 # Then wait for the process to die (killed by watchdog timer).
-# Returns 0 if the process was killed by signal (exit >= 128).
+# Returns 0 if the process was killed by SIGKILL (exit 137), as the
+# watchdog's signal handler does.
 # Timeout: 2 × paxos_lease_duration + buffer.
 trigger_watchdog_stall() {
     local pid="${1:-${HOLDER_PID:-}}"
@@ -598,8 +614,7 @@ trigger_watchdog_stall() {
             wait "$pid" 2>/dev/null || exit_code=$?
             rm -f "$tmpout"; WATCHDOG_STALL_TMPOUT=""
             HOLDER_PID=""
-            # Killed by signal → exit code >= 128 (137 for SIGKILL)
-            if [[ $exit_code -ge 128 ]]; then
+            if [[ $exit_code -eq 137 ]]; then
                 return 0
             fi
             return 1
