@@ -28,6 +28,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   successful despite a journal write failure, then disappear after a crash.
   These failures now follow normal error handling and retry rules. This
   concerns the PolarFS filesystem journal (XCOM-202)
+- Read-write mounts, including promotions of read-only mounts, now fail if
+  PolarFS cannot start its lease watchdog (XCOM-202)
 
 ## [3.1.0] - 2026-10-20
 
