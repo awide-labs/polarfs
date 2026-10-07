@@ -235,6 +235,33 @@ host 1    flags=RW          gen=3     ballot=91
    - `STATUS`: `ACTIVE RW HOLDER` with expiry countdown (to `lease_duration + clock_skew_max + 1` seconds of age) if the lease is live, `expired` with age if stale, or `prepare phase` if in ballot negotiation.
    - Empty host sectors (never used or cleanly released) are omitted.
 
+### RW lease deployment requirements
+
+All hosts accessing the same disk must meet these requirements:
+
+- Assign a unique host ID to each host.
+- Use the same `paxos_lease_duration` on every host, including PFS tools.
+  Do not change it while any host holds or is acquiring an RW lease.
+- Keep the difference between hosts' wall clocks within the
+  `paxos_clock_skew_max` configured on every host.
+- Synchronize clocks before starting PFS. Configure time synchronization and
+  VM clock management to avoid stepping `CLOCK_REALTIME` forward or backward
+  while any host holds or is acquiring an RW lease. This also applies to
+  manual clock changes. Keeping hosts synchronized with each other is not
+  sufficient if their clocks step together.
+
+Lease records use wall-clock timestamps, while the holder's watchdog uses
+elapsed time (`CLOCK_BOOTTIME`). A forward wall-clock step can make another
+host consider a lease expired before its holder's watchdog fires, even when
+both hosts have identical clocks and lease durations.
+
+Before a planned clock step or lease-duration change, prevent new RW lease
+acquisitions and cleanly release all RW leases on the affected disk. Resume
+RW mounts only after clocks and configuration meet the requirements above.
+These requirements are maintained by the operator; the lease protocol does
+not enforce them across hosts. Violating them can allow simultaneous RW
+writers and corrupt the filesystem.
+
 # 2. File&Directory-Related Commands
 
 ## 2.1 Overview
