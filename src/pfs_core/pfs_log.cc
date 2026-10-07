@@ -1692,9 +1692,11 @@ pfs_log_thread_entry(void *arg)
 		 * The renewal in the same iteration as the SUSPEND handler
 		 * (still SERVING) completes before the reply is sent.
 		 *
-		 * LOGST_STOP: mnt_rw_lease_held is false by the time STOP is
-		 * processed (pfs_leader_unload ran first), so the second
-		 * condition already guards it.
+		 * LOGST_STOP: the loop exits in the iteration that handles
+		 * STOP, so renewal never runs in that state.  A renewal
+		 * earlier in that iteration is harmless: unmount stops and
+		 * joins this thread (pfs_log_stop) before pfs_leader_unload
+		 * clears our sector, so the clear comes last.
 		 */
 		if (log->log_state != LOGST_SUSPENDED &&
 		    log->log_mount->mnt_rw_lease_held &&
