@@ -9,6 +9,7 @@
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-clock-offset <sec>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-bad-read <target_hostid> <corrupt|eio> <ms>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-slow-corrupt <target_hostid> <delay_ms> <eio_ms> [nochange]
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-kill-timer-fail <create|arm|rearm>
  *   pfs_lease_hold <cluster> <pbdname> <rw_hostid> demote <ro_hostid>
  *   pfs_lease_hold <cluster> <pbdname> <writer_hostid> corrupt-sector <target_hostid> <badmagic|badchecksum>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> self-corrupt-renew
@@ -54,6 +55,10 @@
  *             until paxos_lease_duration - 0.5s after that read returned,
  *             then different corrupt bytes B (with "nochange", always A:
  *             a dead writer).  Used by Group I tests.
+ *   rw-kill-timer-fail — like rw, but setting up the lease kill timer
+ *             fails: creating it (create), every arming of it (arm), or
+ *             every arming after the first, i.e. when renewals push the
+ *             deadline out (rearm).  Used by Group N tests.
  *   promote — mount RO, print "MOUNTED_RO", block until SIGUSR1; then call
  *             pfs_remount() to promote to RW in-place.  On success prints
  *             "MOUNTED_RW"; on failure prints "REMOUNT_FAILED:<errno>".
@@ -357,6 +362,36 @@ mode_rw_slow_corrupt(const char *cluster, const char *pbdname, int hostid,
 	g_slow_eio_ms = eio_ms;
 	g_slow_change = change;
 	pfs_rw_lease_test_read_hook = slow_corrupt_hook;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static const char *g_kill_timer_fail;
+static int g_kill_timer_arms;
+
+static int
+kill_timer_fail_hook(bool create)
+{
+	if (create)
+		return strcmp(g_kill_timer_fail, "create") == 0 ? -EAGAIN : 0;
+	if (strcmp(g_kill_timer_fail, "arm") == 0)
+		return -EINVAL;
+	if (strcmp(g_kill_timer_fail, "rearm") == 0 && g_kill_timer_arms++ > 0)
+		return -EINVAL;
+	return 0;
+}
+
+static int
+mode_rw_kill_timer_fail(const char *cluster, const char *pbdname, int hostid,
+    const char *step)
+{
+	if (strcmp(step, "create") != 0 && strcmp(step, "arm") != 0 &&
+	    strcmp(step, "rearm") != 0) {
+		fprintf(stderr,
+		    "rw-kill-timer-fail: step must be create, arm or rearm\n");
+		return 1;
+	}
+	g_kill_timer_fail = step;
+	pfs_rw_lease_test_kill_timer_hook = kill_timer_fail_hook;
 	return mode_rw_ro(cluster, pbdname, hostid, "rw");
 }
 
@@ -1310,6 +1345,17 @@ main(int argc, char *argv[])
 		}
 		return mode_rw_bad_read(cluster, pbdname, hostid,
 		    (uint32_t)atoi(argv[5]), argv[6], atol(argv[7]));
+	}
+
+	if (strcmp(mode, "rw-kill-timer-fail") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-kill-timer-fail <create|arm|rearm>\n");
+			return 1;
+		}
+		return mode_rw_kill_timer_fail(cluster, pbdname, hostid,
+		    argv[5]);
 	}
 
 	if (strcmp(mode, "rw-clock-offset") == 0) {

@@ -50,6 +50,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   These failures now follow normal error handling and retry rules. This
   concerns the PolarFS filesystem journal (XCOM-202)
 
+- Read-write mounts now fail if PolarFS cannot start its lease watchdog.
+  Previously, the mount could succeed without this protection against a
+  stalled host continuing to write after another host took over (XCOM-202)
+
 ### Performance
 
 - `devstat` and `mountstat` statistics modules significantly slowed down
