@@ -24,6 +24,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   while another host was still writing to the same disk. PolarFS now waits
   or refuses the mount with `EBUSY` when it cannot safely establish that the
   previous writer has stopped (XCOM-202)
+- Fixed a case where filesystem metadata changes could be reported as
+  successful despite a journal write failure, then disappear after a crash.
+  These failures now follow normal error handling and retry rules. This
+  concerns the PolarFS filesystem journal (XCOM-202)
 
 ## [3.1.0] - 2026-10-20
 
