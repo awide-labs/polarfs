@@ -390,7 +390,8 @@ pfs_leader_write(pfs_mount_t *mnt, pfs_leader_record_t *nl)
 
 	int rv = write_leader(mnt, nl);
 	if (rv < 0) {
-		pfs_etrace("write_leader failed：%d\n", rv);
+		pfs_etrace("write_leader failed: %d\n", rv);
+		return rv;
 	}
 
 	pfs_dbgtrace("log txid (%lld, %lld] offset (%llu, %llu] %lld\n",
