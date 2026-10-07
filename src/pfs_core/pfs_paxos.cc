@@ -34,6 +34,8 @@
 #include <sys/ioctl.h>
 #include <signal.h>
 
+#include <vector>
+
 #include "pfs_impl.h"
 #include "pfs_api.h"
 #include "pfs_util.h"
@@ -45,17 +47,134 @@
 #include "pfs_option.h"
 
 
-#define	PFS_MAX_DISKS		4
-
 static int64_t paxos_lease_duration      = 30; /* seconds until another host may steal RW */
 static int64_t paxos_watchdog_enable     = 0;  /* 0=disabled, 1=enable /dev/watchdog */
+static int64_t paxos_clock_skew_max      = 2;  /* max CLOCK_REALTIME difference between hosts, seconds */
+
+static bool
+paxos_check_ival_nonneg(void *data)
+{
+	return *(int64_t *)data >= 0;
+}
+
 PFS_OPTION_REG(paxos_lease_duration,       pfs_check_ival_normal);
 PFS_OPTION_REG(paxos_watchdog_enable,      pfs_check_ival_normal);
+PFS_OPTION_REG(paxos_clock_skew_max,       paxos_check_ival_nonneg);
+
+#ifdef PFS_TEST
+void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
+void (*pfs_rw_lease_test_before_acquire)(pfs_mount_t *mnt);
+int (*pfs_rw_lease_test_read_hook)(pfs_mount_t *mnt, uint32_t host_id,
+    void *sector);
+int64_t pfs_rw_lease_test_clock_offset;
+void (*pfs_rw_lease_test_clock_hook)(clockid_t clock, struct timespec *ts);
+int (*pfs_rw_lease_test_kill_timer_hook)(bool create);
+#endif
+
+/*
+ * Clock for our own lease deadlines, including when our lease writes were
+ * issued and when the kill timer fires.  Its readings are only compared
+ * with each other, never with another host's.
+ *
+ * Other hosts age our records in real time, which keeps running while this
+ * machine is suspended, so the clock must count suspended time too:
+ * CLOCK_MONOTONIC stops during suspend and would let a resumed host think
+ * its expired PREPARE or RW record is still live.
+ */
+#define	LEASE_CLOCK	CLOCK_BOOTTIME
+
+static void
+lease_clock_now(struct timespec *ts)
+{
+	clock_gettime(LEASE_CLOCK, ts);
+#ifdef PFS_TEST
+	if (pfs_rw_lease_test_clock_hook)
+		pfs_rw_lease_test_clock_hook(LEASE_CLOCK, ts);
+#endif
+}
+
+static int64_t
+timespec_diff_ns(const struct timespec *later, const struct timespec *earlier)
+{
+	return (int64_t)(later->tv_sec - earlier->tv_sec) * 1000000000 +
+	    (later->tv_nsec - earlier->tv_nsec);
+}
+
+/*
+ * Age of a host record timestamp by our clock, in seconds.  Negative if the
+ * writer's clock is ahead of ours.
+ */
+static int64_t
+host_record_age(uint64_t ts, const struct timespec *now)
+{
+	return (int64_t)now->tv_sec - (int64_t)ts;
+}
+
+/*
+ * Age by our clock at which another host's record expires: see
+ * host_record_live().
+ */
+static int64_t
+lease_expiry_age(void)
+{
+	return paxos_lease_duration + paxos_clock_skew_max + 1;
+}
+
+/*
+ * Whether a host record with timestamp ts may belong to a live host.
+ *
+ * ts is the writer's CLOCK_REALTIME in whole seconds.  The writer's clock
+ * may run up to paxos_clock_skew_max behind ours and truncation loses up to
+ * 1s more, so the record stays live until it is
+ * paxos_lease_duration + paxos_clock_skew_max + 1 seconds old by our clock.
+ * The holder's kill timer fires paxos_lease_duration after its last write
+ * was issued, so by then it has stopped writing.  A timestamp in our future
+ * (writer's clock ahead) is live.
+ */
+static bool
+host_record_live(uint64_t ts, const struct timespec *now)
+{
+	return host_record_age(ts, now) < lease_expiry_age();
+}
+
+/*
+ * Whether paxos_lease_duration has passed since a lease write of ours was
+ * issued at *issue (LEASE_CLOCK).  From then on other hosts may treat that
+ * record as expired (see host_record_live()).
+ */
+static bool
+lease_write_expired(const struct timespec *issue)
+{
+	struct timespec now;
+
+	lease_clock_now(&now);
+	return timespec_diff_ns(&now, issue) >=
+	    paxos_lease_duration * 1000000000;
+}
+
+/*
+ * A corrupt host sector that an RW acquisition watched until it could treat
+ * the writer as dead, with the bytes it held then.  Later checks in the same
+ * acquisition ignore the sector only while it still holds exactly these
+ * bytes.
+ */
+struct lease_dead_sector {
+	uint32_t		host_id;
+	pfs_host_record_t	raw;
+};
+typedef std::vector<lease_dead_sector> lease_dead_set_t;
 
 /* forward declarations: static helpers defined later in this file */
-static int pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret);
-static int pfs_rw_lease_check_conflict(pfs_mount_t *mnt);
-static int pfs_rw_lease_wait_and_check(pfs_mount_t *mnt, uint32_t blocker_id);
+static int pfs_rw_lease_wait_bad_sectors(pfs_mount_t *mnt,
+    lease_dead_set_t *dead);
+static int pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret,
+    const lease_dead_set_t *dead);
+static int pfs_rw_lease_verify_prepare(pfs_mount_t *mnt,
+    const lease_dead_set_t *dead);
+static int pfs_rw_lease_check_conflict(pfs_mount_t *mnt,
+    const lease_dead_set_t *dead);
+static int pfs_rw_lease_wait_and_check(pfs_mount_t *mnt, uint32_t blocker_id,
+    const lease_dead_set_t *dead);
 static int pfs_host_record_clear(pfs_mount_t *mnt, uint32_t host_id);
 
 static uint64_t
@@ -71,9 +190,6 @@ pfs_ballot_generate(pfs_mount_t *mnt)
 #define	leader_record_in(a, b)	(*(b) = *(a))
 #define	leader_record_out(a, b)	(*(b) = *(a))
 
-#define	request_record_in(a, b)	(*(a) = *(b))
-#define	request_record_out(a, b) (*(b) = *(a))
-
 #define	cpu_to_le32(a)		(a)
 
 static inline int
@@ -86,36 +202,6 @@ direct_align(size_t sector_size)
 		return 4 * 1024 * 1024;
 
 	return -EINVAL;
-}
-
-static uint64_t
-monotime(void)
-{
-	struct timespec ts;
-
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ts.tv_sec;
-}
-
-int
-get_rand(int a, int b)
-{
-#if notyet
-#endif
-	return -1;
-}
-
-static uint32_t
-roundup_power_of_two(uint32_t val)
-{
-	val--;
-	val |= val >> 1;
-	val |= val >> 2;
-	val |= val >> 4;
-	val |= val >> 8;
-	val |= val >> 16;
-	val++;
-	return val;
 }
 
 static int
@@ -220,7 +306,6 @@ read_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr, uint32_t *checksum)
 static int
 verify_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr, uint32_t checksum)
 {
-	struct pfs_leader_record leader_rr;
 	int result;
 
 	if (lr->magic == PFS_LEADER_CLEAR)
@@ -306,7 +391,8 @@ pfs_leader_write(pfs_mount_t *mnt, pfs_leader_record_t *nl)
 
 	int rv = write_leader(mnt, nl);
 	if (rv < 0) {
-		pfs_etrace("write_leader failed：%d\n", rv);
+		pfs_etrace("write_leader failed: %d\n", rv);
+		return rv;
 	}
 
 	pfs_dbgtrace("log txid (%lld, %lld] offset (%llu, %llu] %lld\n",
@@ -459,10 +545,13 @@ pfs_leader_load(pfs_mount_t *mnt)
 	}
 
 	if (pfs_writable(mnt)) {
+		lease_dead_set_t dead;
 		uint32_t blocker_id = 0;
-		int rv = pfs_rw_lease_check(mnt, &blocker_id);
-		if (rv == -EBUSY)
-			rv = pfs_rw_lease_wait_and_check(mnt, blocker_id);
+		int rv = pfs_rw_lease_wait_bad_sectors(mnt, &dead);
+		if (rv == 0)
+			rv = pfs_rw_lease_check(mnt, &blocker_id, &dead);
+		if (rv == -EBUSY && blocker_id != 0)
+			rv = pfs_rw_lease_wait_and_check(mnt, blocker_id, &dead);
 		if (rv < 0)
 			return rv;
 
@@ -473,38 +562,94 @@ pfs_leader_load(pfs_mount_t *mnt)
 		else
 			mnt->mnt_host_generation = 1;
 
+#ifdef PFS_TEST
+		if (pfs_rw_lease_test_before_prepare)
+			pfs_rw_lease_test_before_prepare(mnt);
+#endif
+
 		/*
 		 * Disk Paxos two-phase protocol:
 		 * prepare → verify → acquire → conflict-check.
 		 * Ballot-based arbitration handles concurrent acquires.
-		 * If verify_prepare finds a higher ballot, we fail
-		 * immediately with -EBUSY.
+		 * If verify_prepare finds a live RW holder or a higher
+		 * ballot, we fail immediately with -EBUSY.  Each step must
+		 * complete before our previous record can expire for other
+		 * hosts, or we give up with -EBUSY.
 		 */
 		rv = pfs_rw_lease_prepare(mnt);
 		if (rv < 0) {
 			pfs_host_record_clear(mnt, mnt->mnt_host_id);
 			return rv;
 		}
+		struct timespec prepare_issue = mnt->mnt_lease_write_time;
 
-		rv = pfs_rw_lease_verify_prepare(mnt);
+		rv = pfs_rw_lease_verify_prepare(mnt, &dead);
 		if (rv < 0) {
 			pfs_host_record_clear(mnt, mnt->mnt_host_id);
 			return rv;
 		}
 
+#ifdef PFS_TEST
+		if (pfs_rw_lease_test_before_acquire)
+			pfs_rw_lease_test_before_acquire(mnt);
+#endif
+
 		rv = pfs_rw_lease_acquire(mnt);
 		if (rv < 0)
 			return rv;
 
-		rv = pfs_rw_lease_check_conflict(mnt);
+		/*
+		 * Our RW record must land while our PREPARE is still live to
+		 * every other host.  If we stalled until it expired, another
+		 * host may have ignored it and acquired, possibly with a lower
+		 * ballot that check_conflict would let us override.
+		 */
+		if (lease_write_expired(&prepare_issue)) {
+			pfs_etrace("rw_lease: host_id=%u prepare expired "
+			    "before acquire completed, giving up\n",
+			    mnt->mnt_host_id);
+			pfs_host_record_clear(mnt, mnt->mnt_host_id);
+			return -EBUSY;
+		}
+
+		rv = pfs_rw_lease_check_conflict(mnt, &dead);
 		if (rv == -EBUSY) {
 			pfs_host_record_clear(mnt, mnt->mnt_host_id);
 			return -EBUSY;
 		}
 
-		mnt->mnt_rw_lease_held = true;
+		/*
+		 * Likewise our RW record must still be live when the conflict
+		 * check completes.  From here the kill timer, armed from the
+		 * same write, fences us if we stall.
+		 */
+		if (lease_write_expired(&mnt->mnt_lease_write_time)) {
+			pfs_etrace("rw_lease: host_id=%u RW record expired "
+			    "before conflict check completed, giving up\n",
+			    mnt->mnt_host_id);
+			pfs_host_record_clear(mnt, mnt->mnt_host_id);
+			return -EBUSY;
+		}
 
-		paxos_watchdog_open(mnt);
+		/*
+		 * Without the kill timer nothing fences us if we stall: the
+		 * log thread's self-fence runs on the thread that would be
+		 * stalled, and other threads could keep writing after another
+		 * host takes over.  Give the lease back instead.
+		 *
+		 * timer_create() fails with EAGAIN when the kernel is short of
+		 * resources, but pfs_mount() retries -EAGAIN endlessly, so
+		 * report that as -ENOMEM.
+		 */
+		rv = paxos_watchdog_open(mnt);
+		if (rv < 0) {
+			pfs_etrace("rw_lease: host_id=%u cannot arm lease "
+			    "watchdog, giving up\n", mnt->mnt_host_id);
+			pfs_host_record_clear(mnt, mnt->mnt_host_id);
+			return rv == -EAGAIN ? -ENOMEM : rv;
+		}
+
+		mnt->mnt_rw_lease_held = true;
 	} else {
 		mnt->mnt_host_generation = 0;
 	}
@@ -606,6 +751,12 @@ pfs_paxos_lease_duration(void)
 	return paxos_lease_duration;
 }
 
+int64_t
+pfs_paxos_clock_skew_max(void)
+{
+	return paxos_clock_skew_max;
+}
+
 static uint32_t
 host_record_checksum(const pfs_host_record_t *hr)
 {
@@ -677,6 +828,10 @@ pfs_host_record_read(pfs_mount_t *mnt, uint32_t host_id,
 	memset(buf, 0, sector_size);
 
 	rv = pfs_read_paxos_sectors(mnt, (int)host_id, 1, buf);
+#ifdef PFS_TEST
+	if (rv >= 0 && pfs_rw_lease_test_read_hook)
+		rv = pfs_rw_lease_test_read_hook(mnt, host_id, buf);
+#endif
 	if (rv < 0) {
 		pfs_mem_free(buf, M_PAXOS_SECTOR);
 		return rv;
@@ -684,11 +839,18 @@ pfs_host_record_read(pfs_mount_t *mnt, uint32_t host_id,
 
 	hr = (pfs_host_record_t *)buf;
 
+	/* Corrupt records are returned too, for callers that compare them. */
+	if (hr_ret)
+		*hr_ret = *hr;
+
 	if (hr->hr_magic == 0) {
-		if (hr_ret)
-			memset(hr_ret, 0, sizeof(pfs_host_record_t));
-		pfs_mem_free(buf, M_PAXOS_SECTOR);
-		return 0; /* empty / cleared sector */
+		static const pfs_host_record_t zero_record = {};
+
+		/* A release writes all zeros; anything else is not empty. */
+		if (memcmp(hr, &zero_record, sizeof(*hr)) == 0) {
+			pfs_mem_free(buf, M_PAXOS_SECTOR);
+			return 0; /* empty / cleared sector */
+		}
 	}
 
 	if (hr->hr_magic != PFS_HOST_MAGIC) {
@@ -706,8 +868,6 @@ pfs_host_record_read(pfs_mount_t *mnt, uint32_t host_id,
 		return PFS_HOST_ECHECKSUM;
 	}
 
-	if (hr_ret)
-		*hr_ret = *hr;
 	pfs_mem_free(buf, M_PAXOS_SECTOR);
 	return PFS_OK;
 }
@@ -742,21 +902,187 @@ pfs_host_record_clear(pfs_mount_t *mnt, uint32_t host_id)
 }
 
 /*
+ * Whether rv from pfs_host_record_read() means the sector was read but holds
+ * a corrupt record (as opposed to failing to read).
+ */
+static bool
+host_record_corrupt(int rv)
+{
+	return rv == PFS_HOST_EMAGIC || rv == PFS_HOST_ECHECKSUM;
+}
+
+/*
+ * Whether host_id's corrupt sector, read back as *raw, is one we already
+ * treated as dead in this acquisition and that has not changed since.
+ */
+static bool
+lease_sector_dead(const lease_dead_set_t *dead, uint32_t host_id,
+    const pfs_host_record_t *raw)
+{
+	for (const lease_dead_sector &d : *dead) {
+		if (d.host_id == host_id)
+			return memcmp(&d.raw, raw, sizeof(*raw)) == 0;
+	}
+	return false;
+}
+
+static int64_t
+mono_elapsed_sec(const struct timespec *since, const struct timespec *now)
+{
+	return now->tv_sec - since->tv_sec -
+	    (now->tv_nsec < since->tv_nsec ? 1 : 0);
+}
+
+/*
+ * First step of an RW acquisition: deal with host sectors whose record we
+ * can't use, because it is corrupt or the sector can't be read.  Such a
+ * sector doesn't tell us who wrote it or when, so we watch it on our own
+ * monotonic clock instead, re-reading it every second:
+ *
+ *   - it becomes empty or a valid record: the normal checks judge it;
+ *   - its corrupt bytes change: someone is writing it, return -EBUSY;
+ *   - its corrupt bytes stay the same for the expiry window: its writer is
+ *     dead (a live host rewrites its sector every second, and its kill
+ *     timer fires paxos_lease_duration after its last write), so add it to
+ *     *dead and let the later checks ignore it while it stays unchanged;
+ *   - it stays unreadable for the window: we can't tell, so fail closed
+ *     with -EBUSY.
+ *
+ * A sector that switches between corrupt and unreadable starts its window
+ * again; after more than two switches (enough for one transient read error
+ * on a dead sector), we give up with -EBUSY.  This is bounded by switches
+ * rather than total time, so a slow scan can't cut a sector's window short.
+ * The window is paxos_lease_duration + paxos_clock_skew_max + 1, the age at
+ * which a valid record expires.
+ *
+ * Returns 0 when no bad sectors remain other than those in *dead.
+ */
+static int
+pfs_rw_lease_wait_bad_sectors(pfs_mount_t *mnt, lease_dead_set_t *dead)
+{
+	struct bad_sector {
+		uint32_t		host_id;
+		bool			unreadable;
+		unsigned int		switches; /* corrupt<->unreadable flips */
+		pfs_host_record_t	raw;	/* bytes, if !unreadable */
+		/*
+		 * CLOCK_MONOTONIC when the read that saw the current state
+		 * returned.  The bytes were written before then, so a live
+		 * writer's kill timer forces a new write within
+		 * paxos_lease_duration of it; starting the window earlier
+		 * (e.g. before a slow scan) would end it too soon.
+		 */
+		struct timespec		since;
+	};
+	std::vector<bad_sector> bad;
+	const int64_t window = paxos_lease_duration + paxos_clock_skew_max + 1;
+	const unsigned int max_switches = 2;
+	pfs_host_record_t hr = {};
+	struct timespec now, seen;
+	uint32_t i;
+	int rv;
+
+	for (i = 1; i <= mnt->mnt_num_hosts; i++) {
+		if (i == mnt->mnt_host_id)
+			continue;
+		rv = pfs_host_record_read(mnt, i, &hr);
+		if (rv == 0 || rv == PFS_OK)
+			continue;
+		clock_gettime(CLOCK_MONOTONIC, &seen);
+		bad.push_back({i, !host_record_corrupt(rv), 0, hr, seen});
+		pfs_etrace("rw_lease_bad: host %u sector %s (rv=%d), watching "
+		    "it for %llds\n", i,
+		    host_record_corrupt(rv) ? "corrupt" : "unreadable", rv,
+		    (long long)window);
+	}
+
+	while (!bad.empty()) {
+		sleep(1);
+		clock_gettime(CLOCK_MONOTONIC, &now);
+
+		/*
+		 * now is taken before this round's reads, so a read that
+		 * finds the window over was issued after the window ended.
+		 */
+		for (auto it = bad.begin(); it != bad.end();) {
+			rv = pfs_host_record_read(mnt, it->host_id, &hr);
+			clock_gettime(CLOCK_MONOTONIC, &seen);
+			if (rv == 0 || rv == PFS_OK) {
+				pfs_itrace("rw_lease_bad: host %u sector is "
+				    "now %s\n", it->host_id,
+				    rv == 0 ? "empty" : "valid");
+				it = bad.erase(it);
+				continue;
+			}
+
+			bool unreadable = !host_record_corrupt(rv);
+			if (it->unreadable != unreadable &&
+			    ++it->switches > max_switches) {
+				pfs_etrace("rw_lease_bad: host %u sector "
+				    "switched between corrupt and unreadable "
+				    "%u times, refusing RW lease\n",
+				    it->host_id, it->switches);
+				return -EBUSY;
+			}
+
+			if (!unreadable) {
+				if (it->unreadable) {
+					it->unreadable = false;
+					it->raw = hr;
+					it->since = seen;
+				} else if (memcmp(&it->raw, &hr,
+				    sizeof(hr)) != 0) {
+					pfs_etrace("rw_lease_bad: host %u "
+					    "corrupt sector changed, someone "
+					    "is writing it\n", it->host_id);
+					return -EBUSY;
+				}
+			} else if (!it->unreadable) {
+				it->unreadable = true;
+				it->since = seen;
+			}
+
+			if (mono_elapsed_sec(&it->since, &now) >= window) {
+				if (it->unreadable) {
+					pfs_etrace("rw_lease_bad: host %u "
+					    "sector unreadable for %llds, "
+					    "refusing RW lease\n",
+					    it->host_id, (long long)window);
+					return -EBUSY;
+				}
+				pfs_itrace("rw_lease_bad: host %u corrupt "
+				    "sector unchanged for %llds, treating "
+				    "its writer as dead\n", it->host_id,
+				    (long long)window);
+				dead->push_back({it->host_id, it->raw});
+				it = bad.erase(it);
+				continue;
+			}
+			++it;
+		}
+	}
+	return 0;
+}
+
+/*
  * Pre-lease check: scan all host sectors for an existing live RW holder.
  * Called before the prepare phase to detect an active lease early,
  * avoiding the overhead of a full prepare→acquire cycle when another
- * host already holds the lease.
+ * host already holds the lease.  It is not sufficient on its own: a host
+ * may acquire after this scan, which pfs_rw_lease_verify_prepare catches.
  *
  * Returns 0 if no live RW holder is found, -EBUSY if a host has an
- * RW record whose timestamp is within paxos_lease_duration.  Corrupt
- * or unreadable sectors are skipped (logged as warnings).
+ * RW record that host_record_live() considers live (*blocker_ret is set to
+ * the freshest such host), or if a sector is unreadable or corrupt and not
+ * one pfs_rw_lease_wait_bad_sectors() found dead (*blocker_ret is 0).
  *
  * Also called from pfs_rw_lease_wait_and_check after the blocking
  * host's lease has expired, to re-verify no other host acquired in
  * the meantime.
  */
 static int
-pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret)
+pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret,
+    const lease_dead_set_t *dead)
 {
 	pfs_host_record_t hr;
 	struct timespec now;
@@ -779,9 +1105,12 @@ pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret)
 
 		rv = pfs_host_record_read(mnt, i, &hr);
 		if (rv < 0) {
-			pfs_etrace("rw_lease_check: host %u sector unreadable "
-			    "(rv=%d), skipping\n", i, rv);
-			continue;
+			if (host_record_corrupt(rv) &&
+			    lease_sector_dead(dead, i, &hr))
+				continue;
+			pfs_etrace("rw_lease_check: BUSY - host %u sector "
+			    "unreadable or corrupt (rv=%d)\n", i, rv);
+			return -EBUSY;
 		}
 		if (rv == 0) /* empty sector */
 			continue;
@@ -790,14 +1119,16 @@ pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret)
 		if (!(hr.hr_flags & PFS_HOST_FL_RW))
 			continue;
 
-		uint64_t age = (uint64_t)now.tv_sec - hr.hr_timestamp;
-		if (age < (uint64_t)paxos_lease_duration) {
+		int64_t age = host_record_age(hr.hr_timestamp, &now);
+		if (host_record_live(hr.hr_timestamp, &now)) {
 			pfs_etrace("rw_lease_check: BUSY - host %u holds live "
-			    "RW lease (gen=%u, ts=%llu, age=%llus, dur=%llds)\n",
+			    "RW lease (gen=%u, ts=%llu, age=%llds, dur=%llds, "
+			    "skew=%llds)\n",
 			    hr.hr_host_id, hr.hr_generation,
 			    (unsigned long long)hr.hr_timestamp,
-			    (unsigned long long)age,
-			    (long long)paxos_lease_duration);
+			    (long long)age,
+			    (long long)paxos_lease_duration,
+			    (long long)paxos_clock_skew_max);
 			if (hr.hr_timestamp > freshest_ts ||
 			    freshest_id == 0) {
 				freshest_id = hr.hr_host_id;
@@ -805,12 +1136,13 @@ pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret)
 			}
 		} else {
 			pfs_itrace("rw_lease_check: host %u has stale RW "
-			    "lease (gen=%u, ts=%llu, age=%llus >= "
-			    "dur=%llds), ignoring\n",
+			    "lease (gen=%u, ts=%llu, age=%llds, dur=%llds, "
+			    "skew=%llds), ignoring\n",
 			    hr.hr_host_id, hr.hr_generation,
 			    (unsigned long long)hr.hr_timestamp,
-			    (unsigned long long)age,
-			    (long long)paxos_lease_duration);
+			    (long long)age,
+			    (long long)paxos_lease_duration,
+			    (long long)paxos_clock_skew_max);
 		}
 	}
 
@@ -825,6 +1157,19 @@ pfs_rw_lease_check(pfs_mount_t *mnt, uint32_t *blocker_ret)
 }
 
 /*
+ * Timestamp for our own host record: our CLOCK_REALTIME seconds.
+ */
+static uint64_t
+lease_timestamp(const struct timespec *now)
+{
+#ifdef PFS_TEST
+	return (uint64_t)(now->tv_sec + pfs_rw_lease_test_clock_offset);
+#else
+	return (uint64_t)now->tv_sec;
+#endif
+}
+
+/*
  * Disk Paxos Phase 1 "prepare": write our sector with FL_PREPARE and mbal
  * set to our ballot.  This announces our intent to acquire the lease.
  *
@@ -834,13 +1179,22 @@ int
 pfs_rw_lease_prepare(pfs_mount_t *mnt)
 {
 	pfs_host_record_t hr;
-	struct timespec now;
+	struct timespec issue, now;
 	uint64_t ballot;
 	int rv;
 
 	ballot = pfs_ballot_generate(mnt);
 	mnt->mnt_current_ballot = ballot;
 
+	/*
+	 * Read LEASE_CLOCK first, so the deadline lease_write_expired() checks
+	 * (paxos_lease_duration after this reading) comes no later than
+	 * paxos_lease_duration after the CLOCK_REALTIME reading below.  The
+	 * record holds that reading truncated to whole seconds, so the
+	 * deadline can be up to 1s past timestamp + paxos_lease_duration;
+	 * host_record_live() allows for that second.
+	 */
+	lease_clock_now(&issue);
 	clock_gettime(CLOCK_REALTIME, &now);
 
 	memset(&hr, 0, sizeof(hr));
@@ -848,12 +1202,14 @@ pfs_rw_lease_prepare(pfs_mount_t *mnt)
 	hr.hr_flags      = PFS_HOST_FL_PREPARE;
 	hr.hr_host_id    = mnt->mnt_host_id;
 	hr.hr_generation = (uint32_t)mnt->mnt_host_generation;
-	hr.hr_timestamp  = (uint64_t)now.tv_sec;
+	hr.hr_timestamp  = lease_timestamp(&now);
 	hr.hr_mbal       = ballot;
 	hr.hr_bal        = 0;
 	hr.hr_checksum   = host_record_checksum(&hr);
 
 	rv = pfs_host_record_write(mnt, &hr);
+	if (rv == 0)
+		mnt->mnt_lease_write_time = issue;
 	if (rv < 0) {
 		pfs_etrace("rw_lease_prepare: write failed host_id=%u "
 		    "ballot=%llu rv=%d\n",
@@ -869,18 +1225,31 @@ pfs_rw_lease_prepare(pfs_mount_t *mnt)
 
 /*
  * Disk Paxos Phase 1 "verify prepare": re-read all other host sectors.
- * If any fresh record has mbal > our ballot, our prepare is preempted.
+ * Our prepare is preempted if any fresh record is FL_RW (any ballot) or
+ * has mbal > our ballot.
  *
- * Only records with a fresh timestamp (age < lease_duration) are considered.
+ * The FL_RW rule is what keeps the lease exclusive.  pfs_rw_lease_check
+ * runs before our prepare is on disk, so a host can acquire after it; that
+ * host's conflict check may also have run before our prepare, in which case
+ * it will never yield to us.  Any host that acquired without seeing our
+ * prepare wrote FL_RW before we got here, so this re-read is guaranteed to
+ * see it.  Ballots only arbitrate between hosts acquiring concurrently.
+ *
+ * Only records that host_record_live() considers live are considered.
  * Stale records from expired leases or crashed hosts are ignored — their
  * ballots are no longer relevant.
  *
  * Returns:
- *   0      — no higher ballot found; safe to proceed to acquire
- *  -EBUSY  — a higher ballot was found; another host is competing
+ *   0      — no fresh RW record, no higher ballot, and no other host's
+ *             sector unreadable or corrupt, except corrupt sectors still
+ *             holding the bytes of a writer judged dead (see
+ *             lease_sector_dead()); safe to proceed to acquire
+ *  -EBUSY  — another host holds or is acquiring the lease, or its sector
+ *             is unreadable, or corrupt other than as a dead writer left
+ *             it
  */
-int
-pfs_rw_lease_verify_prepare(pfs_mount_t *mnt)
+static int
+pfs_rw_lease_verify_prepare(pfs_mount_t *mnt, const lease_dead_set_t *dead)
 {
 	pfs_host_record_t hr;
 	struct timespec now;
@@ -894,21 +1263,44 @@ pfs_rw_lease_verify_prepare(pfs_mount_t *mnt)
 			continue;
 
 		rv = pfs_host_record_read(mnt, i, &hr);
-		if (rv != PFS_OK)
+		if (rv == 0)
 			continue;
+		if (rv != PFS_OK) {
+			if (host_record_corrupt(rv) &&
+			    lease_sector_dead(dead, i, &hr))
+				continue;
+			pfs_etrace("%s: host %u sector unreadable or corrupt "
+			    "(rv=%d), preempted\n", __func__, i, rv);
+			return -EBUSY;
+		}
 
-		uint64_t age = (uint64_t)now.tv_sec - hr.hr_timestamp;
-		if (age >= (uint64_t)paxos_lease_duration)
+		int64_t age = host_record_age(hr.hr_timestamp, &now);
+		if (!host_record_live(hr.hr_timestamp, &now))
 			continue;  /* stale — ballot no longer relevant */
+
+		/*
+		 * A fresh RW record blocks us regardless of its ballot: that
+		 * host may already have passed its conflict check, which ran
+		 * before our prepare was on disk, so it would never yield.
+		 */
+		if (hr.hr_flags & PFS_HOST_FL_RW) {
+			pfs_itrace("rw_lease_verify_prepare: host %u holds "
+			    "fresh RW lease (ballot %llu, age=%llds), "
+			    "preempted\n",
+			    hr.hr_host_id,
+			    (unsigned long long)hr.hr_bal,
+			    (long long)age);
+			return -EBUSY;
+		}
 
 		if (hr.hr_mbal > mnt->mnt_current_ballot) {
 			pfs_itrace("rw_lease_verify_prepare: host %u has "
-			    "higher mbal %llu > our %llu (age=%llus), "
+			    "higher mbal %llu > our %llu (age=%llds), "
 			    "preempted\n",
 			    hr.hr_host_id,
 			    (unsigned long long)hr.hr_mbal,
 			    (unsigned long long)mnt->mnt_current_ballot,
-			    (unsigned long long)age);
+			    (long long)age);
 			return -EBUSY;
 		}
 
@@ -934,16 +1326,25 @@ pfs_rw_lease_verify_prepare(pfs_mount_t *mnt)
  * FL_RW and our ballot.  Re-reads every sector to detect races where two
  * hosts both passed prepare+verify before either had written acquire.
  *
- * Tie-break rule: highest ballot wins.  If another host has a fresh record
- * (FL_RW or FL_PREPARE) with a higher ballot, we are the loser.
+ * Tie-break rule: if another host has a fresh record (FL_RW or FL_PREPARE)
+ * with a higher ballot, we are the loser.  The highest ballot does not always
+ * win: a higher-ballot host whose prepare landed after our FL_RW yields to
+ * that FL_RW in verify_prepare, so concurrent acquirers can all get -EBUSY.
+ * Each clears its sector, so a retry can win.
  *
  * Returns:
- *   0      — we have the highest ballot; we hold the lease
- *  -EBUSY  — a higher-ballot host acquired concurrently; caller must clear
- *             our sector and abort the mount
+ *   0      — no fresh record of another host has a higher ballot, and no
+ *             other host's sector is unreadable or corrupt, except as
+ *             verify_prepare allows.  That does not make us the holder yet:
+ *             pfs_leader_load still checks that our RW record has not
+ *             expired and arms the lease watchdog, and gives the lease
+ *             back if either fails.
+ *  -EBUSY  — a higher-ballot host is acquiring concurrently, or another
+ *             host's sector is unreadable or corrupt beyond that exception;
+ *             caller must clear our sector and abort the mount
  */
 static int
-pfs_rw_lease_check_conflict(pfs_mount_t *mnt)
+pfs_rw_lease_check_conflict(pfs_mount_t *mnt, const lease_dead_set_t *dead)
 {
 	pfs_host_record_t hr;
 	struct timespec now;
@@ -957,13 +1358,20 @@ pfs_rw_lease_check_conflict(pfs_mount_t *mnt)
 			continue;
 
 		rv = pfs_host_record_read(mnt, i, &hr);
-		if (rv != PFS_OK)
+		if (rv == 0)
 			continue;
+		if (rv != PFS_OK) {
+			if (host_record_corrupt(rv) &&
+			    lease_sector_dead(dead, i, &hr))
+				continue;
+			pfs_etrace("%s: host %u sector unreadable or corrupt "
+			    "(rv=%d), preempted\n", __func__, i, rv);
+			return -EBUSY;
+		}
 		if (!(hr.hr_flags & (PFS_HOST_FL_RW | PFS_HOST_FL_PREPARE)))
 			continue;
 
-		uint64_t age = (uint64_t)now.tv_sec - hr.hr_timestamp;
-		if (age >= (uint64_t)paxos_lease_duration)
+		if (!host_record_live(hr.hr_timestamp, &now))
 			continue;  /* stale — not a concurrent acquire */
 
 		/*
@@ -999,18 +1407,25 @@ pfs_rw_lease_check_conflict(pfs_mount_t *mnt)
  *   1. Timestamp advances  →  holder is alive and renewing; return -EBUSY
  *      immediately (no need to wait the full lease window).
  *
- *   2. Timestamp stays the same until initial_ts + paxos_lease_duration
- *      has passed  →  blocker has died; full re-check, return 0.
+ *   2. Timestamp stays the same until host_record_live(initial_ts) turns
+ *      false  →  blocker has died; full re-check, return 0.
  *      Since pfs_rw_lease_check selects the blocker with the freshest
  *      timestamp, once this record expires all other simultaneous crash
  *      records (with older timestamps) have also expired.
  *
  *   3. Sector is cleared   →  holder unmounted cleanly; re-check, return 0.
  *
- * At most one wait cycle is performed, bounded by paxos_lease_duration.
+ * At most one wait cycle is performed.  Unless the blocker renews or
+ * releases first, it lasts until the blocker's record is lease_expiry_age()
+ * seconds old by our clock.  That is an age, not a bound on the wait: a
+ * timestamp from a writer whose clock is ahead of ours starts out with a
+ * negative age, so with the defaults (30 + 2 + 1) and a timestamp 2s ahead
+ * the wait approaches 35s, plus up to 1s of polling and the time the sector
+ * reads take.
  */
 static int
-pfs_rw_lease_wait_and_check(pfs_mount_t *mnt, uint32_t blocker_id)
+pfs_rw_lease_wait_and_check(pfs_mount_t *mnt, uint32_t blocker_id,
+    const lease_dead_set_t *dead)
 {
 	pfs_host_record_t hr;
 	struct timespec now;
@@ -1025,18 +1440,22 @@ pfs_rw_lease_wait_and_check(pfs_mount_t *mnt, uint32_t blocker_id)
 	 */
 	rv = pfs_host_record_read(mnt, blocker_id, &hr);
 	if (rv != PFS_OK || !(hr.hr_flags & PFS_HOST_FL_RW)) {
-		/* Blocker released or became unreadable since check. */
+		/*
+		 * Blocker released, or its sector became unreadable or
+		 * corrupt since the check; the re-check fails closed on that.
+		 */
 		pfs_itrace("rw_lease_wait: blocker %u gone before polling "
 		    "started, re-checking\n", blocker_id);
-		return pfs_rw_lease_check(mnt, nullptr);
+		return pfs_rw_lease_check(mnt, nullptr, dead);
 	}
 	blocker_gen = hr.hr_generation;
 	initial_ts  = hr.hr_timestamp;
 
 	pfs_itrace("rw_lease_wait: host %u (gen=%u ts=%llu) "
-	    "holds live lease, polling every 1s (max %llds)\n",
+	    "holds live lease, polling every 1s until its record is "
+	    "%llds old\n",
 	    blocker_id, blocker_gen, (unsigned long long)initial_ts,
-	    (long long)paxos_lease_duration);
+	    (long long)lease_expiry_age());
 
 	for (;;) {
 		sleep(1);
@@ -1047,13 +1466,13 @@ pfs_rw_lease_wait_and_check(pfs_mount_t *mnt, uint32_t blocker_id)
 			/* Sector cleared — clean release by the holder. */
 			pfs_itrace("rw_lease_wait: host %u released lease "
 			    "cleanly\n", blocker_id);
-			return pfs_rw_lease_check(mnt, nullptr);
+			return pfs_rw_lease_check(mnt, nullptr, dead);
 		}
 		if (rv < 0) {
-			/* Unreadable — treat conservatively as expired. */
+			/* Unreadable or corrupt: the re-check fails closed. */
 			pfs_etrace("rw_lease_wait: host %u sector unreadable "
-			    "(rv=%d), treating as expired\n", blocker_id, rv);
-			return pfs_rw_lease_check(mnt, nullptr);
+			    "or corrupt (rv=%d), re-checking\n", blocker_id, rv);
+			return pfs_rw_lease_check(mnt, nullptr, dead);
 		}
 
 		/* rv == PFS_OK: valid record still present. */
@@ -1073,18 +1492,18 @@ pfs_rw_lease_wait_and_check(pfs_mount_t *mnt, uint32_t blocker_id)
 		 * record expires, all other simultaneous crash records
 		 * (with older timestamps) have also expired.
 		 */
-		uint64_t age = (uint64_t)now.tv_sec - initial_ts;
-		if (age >= (uint64_t)paxos_lease_duration) {
+		int64_t age = host_record_age(initial_ts, &now);
+		if (!host_record_live(initial_ts, &now)) {
 			pfs_itrace("rw_lease_wait: host %u lease expired "
-			    "(age=%llus), re-checking all hosts\n",
-			    blocker_id, (unsigned long long)age);
-			return pfs_rw_lease_check(mnt, nullptr);
+			    "(age=%llds), re-checking all hosts\n",
+			    blocker_id, (long long)age);
+			return pfs_rw_lease_check(mnt, nullptr, dead);
 		}
 
-		pfs_itrace("rw_lease_wait: host %u lease age=%llus/%llds, "
+		pfs_itrace("rw_lease_wait: host %u lease age=%llds/%llds, "
 		    "timestamp unchanged, continuing\n",
-		    blocker_id, (unsigned long long)age,
-		    (long long)paxos_lease_duration);
+		    blocker_id, (long long)age,
+		    (long long)lease_expiry_age());
 	}
 }
 
@@ -1092,9 +1511,18 @@ int
 pfs_rw_lease_acquire(pfs_mount_t *mnt)
 {
 	pfs_host_record_t hr;
-	struct timespec now;
+	struct timespec issue, now;
 	int rv;
 
+	/*
+	 * Read LEASE_CLOCK first, so the kill deadline (paxos_lease_duration
+	 * after this reading) comes no later than paxos_lease_duration after
+	 * the CLOCK_REALTIME reading below.  The record holds that reading
+	 * truncated to whole seconds, so the deadline can be up to 1s past
+	 * timestamp + paxos_lease_duration; host_record_live() allows for
+	 * that second.
+	 */
+	lease_clock_now(&issue);
 	clock_gettime(CLOCK_REALTIME, &now);
 
 	memset(&hr, 0, sizeof(hr));
@@ -1102,12 +1530,14 @@ pfs_rw_lease_acquire(pfs_mount_t *mnt)
 	hr.hr_flags      = PFS_HOST_FL_RW;
 	hr.hr_host_id    = mnt->mnt_host_id;
 	hr.hr_generation = (uint32_t)mnt->mnt_host_generation;
-	hr.hr_timestamp  = (uint64_t)now.tv_sec;
+	hr.hr_timestamp  = lease_timestamp(&now);
 	hr.hr_mbal       = mnt->mnt_current_ballot;
 	hr.hr_bal        = mnt->mnt_current_ballot;
 	hr.hr_checksum   = host_record_checksum(&hr);
 
 	rv = pfs_host_record_write(mnt, &hr);
+	if (rv == 0)
+		mnt->mnt_lease_write_time = issue;
 	if (rv < 0) {
 		pfs_etrace("rw_lease_acquire: failed to write lease record "
 		    "host_id=%u gen=%u ballot=%llu rv=%d\n",
@@ -1195,9 +1625,18 @@ int
 pfs_rw_lease_renew(pfs_mount_t *mnt)
 {
 	pfs_host_record_t hr;
-	struct timespec now;
+	struct timespec issue, now;
 	int rv;
 
+	/*
+	 * Read LEASE_CLOCK first, so the kill deadline (paxos_lease_duration
+	 * after this reading) comes no later than paxos_lease_duration after
+	 * the CLOCK_REALTIME reading below.  The record holds that reading
+	 * truncated to whole seconds, so the deadline can be up to 1s past
+	 * timestamp + paxos_lease_duration; host_record_live() allows for
+	 * that second.
+	 */
+	lease_clock_now(&issue);
 	clock_gettime(CLOCK_REALTIME, &now);
 
 	memset(&hr, 0, sizeof(hr));
@@ -1205,12 +1644,14 @@ pfs_rw_lease_renew(pfs_mount_t *mnt)
 	hr.hr_flags      = PFS_HOST_FL_RW;
 	hr.hr_host_id    = mnt->mnt_host_id;
 	hr.hr_generation = (uint32_t)mnt->mnt_host_generation;
-	hr.hr_timestamp  = (uint64_t)now.tv_sec;
+	hr.hr_timestamp  = lease_timestamp(&now);
 	hr.hr_mbal       = mnt->mnt_current_ballot;
 	hr.hr_bal        = mnt->mnt_current_ballot;
 	hr.hr_checksum   = host_record_checksum(&hr);
 
 	rv = pfs_host_record_write(mnt, &hr);
+	if (rv == 0)
+		mnt->mnt_lease_write_time = issue;
 	if (rv < 0) {
 		pfs_etrace("rw_lease_renew: failed to write renewal "
 		    "host_id=%u gen=%u rv=%d\n",
@@ -1268,34 +1709,97 @@ paxos_kill_handler(int sig)
 	_exit(134);  /* fallback if SIGKILL somehow doesn't terminate */
 }
 
-void
+/*
+ * Arm the kill timer to fire paxos_lease_duration after our last lease write
+ * was issued (not after it completed): other hosts may treat our record as
+ * expired from then on, so we must be dead by that point.
+ *
+ * On failure the timer keeps whatever deadline it had.
+ */
+static int
+paxos_kill_timer_arm(pfs_mount_t *mnt)
+{
+	struct itimerspec its = {};
+	int err = 0;
+
+	/*
+	 * Absolute deadline: a relative timeout computed from a fresh reading
+	 * would move the deadline out by any suspend between that reading and
+	 * timer_settime().  A deadline already past fires at once.
+	 */
+	its.it_value = mnt->mnt_lease_write_time;
+	its.it_value.tv_sec += paxos_lease_duration;
+#ifdef PFS_TEST
+	if (pfs_rw_lease_test_clock_hook) {
+		/* Move the deadline from hooked readings onto the real clock. */
+		struct timespec real, hooked;
+		int64_t ns;
+
+		clock_gettime(LEASE_CLOCK, &real);
+		hooked = real;
+		pfs_rw_lease_test_clock_hook(LEASE_CLOCK, &hooked);
+		ns = (int64_t)its.it_value.tv_sec * 1000000000 +
+		    its.it_value.tv_nsec + timespec_diff_ns(&real, &hooked);
+		its.it_value.tv_sec = ns / 1000000000;
+		its.it_value.tv_nsec = ns % 1000000000;
+	}
+	if (pfs_rw_lease_test_kill_timer_hook)
+		err = pfs_rw_lease_test_kill_timer_hook(false);
+#endif
+	if (err == 0 &&
+	    timer_settime(mnt->mnt_kill_timer, TIMER_ABSTIME, &its, NULL) < 0)
+		err = -errno;
+	if (err < 0)
+		pfs_etrace("watchdog: arming kill timer failed: %d\n", err);
+	return err;
+}
+
+/*
+ * Arm the timer-kill watchdog for a lease we have just acquired.  It is
+ * mandatory: fails, leaving nothing armed, if the timer cannot be set up.
+ */
+int
 paxos_watchdog_open(pfs_mount_t *mnt)
 {
+	int err = 0;
+
 	/* Timer-kill watchdog (mandatory) */
 	struct sigaction sa = {};
 	sa.sa_handler = paxos_kill_handler;
 	sa.sa_flags = SA_RESETHAND;  /* one-shot: restore default after firing */
-	sigaction(SIGUSR2, &sa, NULL);
+	if (sigaction(SIGUSR2, &sa, NULL) < 0) {
+		err = -errno;
+		pfs_etrace("watchdog_open: sigaction failed: %d\n", err);
+		return err;
+	}
 
 	struct sigevent sev = {};
 	sev.sigev_notify = SIGEV_SIGNAL;
 	sev.sigev_signo = SIGUSR2;
-	if (timer_create(CLOCK_MONOTONIC, &sev, &mnt->mnt_kill_timer) == 0) {
-		struct itimerspec its = {};
-		its.it_value.tv_sec = paxos_lease_duration;
-		timer_settime(mnt->mnt_kill_timer, 0, &its, NULL);
-		mnt->mnt_kill_timer_armed = true;
-		pfs_itrace("watchdog_open: timer-kill armed "
-		    "(SIGUSR2 in %llds) pbd=%s\n",
-		    (long long)paxos_lease_duration, mnt->mnt_pbdname);
-	} else {
-		pfs_etrace("watchdog_open: timer_create failed errno=%d, "
-		    "falling back to log-thread self-fence only\n", errno);
+#ifdef PFS_TEST
+	if (pfs_rw_lease_test_kill_timer_hook)
+		err = pfs_rw_lease_test_kill_timer_hook(true);
+#endif
+	if (err == 0 &&
+	    timer_create(LEASE_CLOCK, &sev, &mnt->mnt_kill_timer) < 0)
+		err = -errno;
+	if (err < 0) {
+		pfs_etrace("watchdog_open: timer_create failed: %d\n", err);
+		return err;
 	}
+	err = paxos_kill_timer_arm(mnt);
+	if (err < 0) {
+		timer_delete(mnt->mnt_kill_timer);
+		return err;
+	}
+	mnt->mnt_kill_timer_armed = true;
+	pfs_itrace("watchdog_open: timer-kill armed "
+	    "(SIGUSR2 in %llds) pbd=%s\n",
+	    (long long)paxos_lease_duration, mnt->mnt_pbdname);
 
 	/* /dev/watchdog (optional) */
 	if (!paxos_watchdog_enable)
-		return;
+		return 0;
 	mnt->mnt_wdog_fd = open("/dev/watchdog", O_WRONLY | O_CLOEXEC);
 	if (mnt->mnt_wdog_fd < 0)
 		pfs_etrace("watchdog_open: cannot open /dev/watchdog errno=%d\n",
@@ -1303,17 +1807,18 @@ paxos_watchdog_open(pfs_mount_t *mnt)
 	else
 		pfs_itrace("watchdog_open: /dev/watchdog armed (fd=%d)\n",
 		    mnt->mnt_wdog_fd);
+	return 0;
 }
 
 void
 paxos_watchdog_pet(pfs_mount_t *mnt)
 {
-	/* Reset timer-kill countdown */
-	if (mnt->mnt_kill_timer_armed) {
-		struct itimerspec its = {};
-		its.it_value.tv_sec = paxos_lease_duration;
-		timer_settime(mnt->mnt_kill_timer, 0, &its, NULL);
-	}
+	/*
+	 * Push the timer-kill deadline out from the renewal just written.  If
+	 * that fails the earlier deadline stands, which still fences us.
+	 */
+	if (mnt->mnt_kill_timer_armed)
+		(void)paxos_kill_timer_arm(mnt);
 
 	/* Pet /dev/watchdog */
 	if (mnt->mnt_wdog_fd >= 0)

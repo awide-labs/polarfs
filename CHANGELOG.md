@@ -28,6 +28,32 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   tracking code existed but the allocation paths bypassed it. All client
   allocations are now tracked (XCOM-188)
 
+- Fixed cases where two hosts could mount the same disk read-write at the
+  same time, risking filesystem corruption. This could happen during
+  simultaneous mount attempts or when a stalled host resumed. Affected mount
+  attempts now fail with `EBUSY` ("busy") and can be retried (XCOM-202)
+
+- Fixed incorrect detection of a failed host when hosts' clocks differed.
+  The new `paxos_clock_skew_max` setting allows for clock differences of up
+  to 2 seconds by default. With default settings, takeover after a host
+  failure includes an additional 3-second safety margin. `pfs lease` shows
+  the updated time remaining before takeover. The lease watchdog now also
+  counts time spent in system suspend (XCOM-202)
+
+- Read errors or damaged lease information could let a host mount read-write
+  while another host was still writing to the same disk. PolarFS now waits
+  or refuses the mount with `EBUSY` when it cannot safely establish that the
+  previous writer has stopped (XCOM-202)
+
+- Fixed a case where filesystem metadata changes could be reported as
+  successful despite a journal write failure, then disappear after a crash.
+  These failures now follow normal error handling and retry rules. This
+  concerns the PolarFS filesystem journal (XCOM-202)
+
+- Read-write mounts now fail if PolarFS cannot start its lease watchdog.
+  Previously, the mount could succeed without this protection against a
+  stalled host continuing to write after another host took over (XCOM-202)
+
 ### Performance
 
 - `devstat` and `mountstat` statistics modules significantly slowed down

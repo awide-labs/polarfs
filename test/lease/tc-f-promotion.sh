@@ -11,7 +11,8 @@
 # TC-F3: RO replica promotes to RW after primary crash
 #        (primary crashed → stale record on disk → must wait for lease expiry).
 # TC-F4: Multiple RO replicas race to promote concurrently.
-#        The lease check must ensure at most one wins (no split-brain).
+#        The lease check must ensure at most one wins (no split-brain);
+#        a round in which all yield is retried until one wins.
 # TC-F5: RW re-promotion while sibling RO replicas remain mounted;
 #        the RO holders must be undisturbed by the new RW mount.
 
@@ -121,58 +122,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# TC-F4: Multiple RO replicas race to promote — exactly one must win
+# TC-F4: Multiple RO replicas race to promote — at most one may win
 # ---------------------------------------------------------------------------
 echo ""
-echo "TC-F4: concurrent promotion race — exactly one winner, no split-brain"
+echo "TC-F4: concurrent promotion race — at most one winner, eventually one"
 
-# Start three candidate promoters simultaneously from a clean slate.
-# The lease mechanism must ensure at most one obtains the RW lease.
-#
-# The ballot-based protocol (Disk Paxos Phase 1) resolves concurrent
-# acquirers by ballot number: the host with the highest ballot wins.
-# Ballots are generation * num_hosts + host_id, guaranteeing uniqueness.
-# A split-brain outcome here (nwon > 1) is a real bug worth reporting.
-tmpout2=$(mktemp); tmpout3=$(mktemp); tmpout4=$(mktemp)
-lease_hold 2 rw >"$tmpout2" & PID2=$!
-lease_hold 3 rw >"$tmpout3" & PID3=$!
-lease_hold 4 rw >"$tmpout4" & PID4=$!
-
-# Give enough time for the winner to mount and begin renewing, which causes
-# the losers' pfs_rw_lease_wait_and_check to return EBUSY quickly (~2s).
-sleep $((LEASE_TEST_DURATION + 3))
-
-winners=(); loser_pids=()
-for tuple in "2:$PID2:$tmpout2" "3:$PID3:$tmpout3" "4:$PID4:$tmpout4"; do
-    hostid="${tuple%%:*}"; rest="${tuple#*:}"; pid="${rest%%:*}"; tmpf="${rest#*:}"
-    if grep -q "^MOUNTED$" "$tmpf" 2>/dev/null; then
-        winners+=("$hostid:$pid")
-    else
-        loser_pids+=("$pid")
-    fi
-    rm -f "$tmpf"
-done
-
-# Stop winners cleanly
-for entry in "${winners[@]:-}"; do
-    pid="${entry#*:}"
-    [[ -n "$pid" ]] && { kill -TERM "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
-done
-# Force-kill any losers still in flight
-for pid in "${loser_pids[@]:-}"; do
-    [[ -n "$pid" ]] && { kill -KILL "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
-done
-
-nwon=${#winners[@]}
-if [[ $nwon -eq 1 ]]; then
-    pass "TC-F4: exactly 1 of 3 concurrent promotions won (host ${winners[0]%%:*})"
-elif [[ $nwon -eq 0 ]]; then
-    fail "TC-F4: no host won the concurrent promotion race (all failed)"
-else
-    winner_hosts=""
-    for e in "${winners[@]}"; do winner_hosts+="${e%%:*} "; done
-    fail "TC-F4: split-brain — $nwon hosts mounted RW simultaneously (hosts $winner_hosts)"
-fi
+race_rw_mounts TC-F4 2 3 4
 
 # ---------------------------------------------------------------------------
 # TC-F5: RW re-promotion while sibling RO replicas remain mounted

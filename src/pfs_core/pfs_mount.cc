@@ -73,6 +73,20 @@ typedef struct mountentry {
 
 static mountentry_t		mount_entry[PFS_MAX_NMOUNT];
 
+#ifdef PFS_TEST
+bool pfs_mount_test_skip_node_lock;
+#endif
+
+static bool
+pfs_mount_node_lock_needed(pfs_mount_t *mnt)
+{
+#ifdef PFS_TEST
+	if (pfs_mount_test_skip_node_lock)
+		return false;
+#endif
+	return !pfs_ispfsd(mnt) && !pfs_istool(mnt) && pfs_writable(mnt);
+}
+
 static void __attribute__((constructor))
 init_pfs_mountentry()
 {
@@ -755,7 +769,7 @@ remount:
 	}
 
 	/* For pfsd, paxos_hostid_local_lock is moved up to SDK side */
-	if (!pfs_ispfsd(mnt) && !pfs_istool(mnt) && pfs_writable(mnt)) {
+	if (pfs_mount_node_lock_needed(mnt)) {
 		fd = paxos_hostid_local_lock(pbdname, DEFAULT_MAX_HOSTS + 1,
 		    __func__);
 		if (fd < 0) {

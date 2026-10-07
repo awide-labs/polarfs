@@ -3,6 +3,13 @@
  *
  * Usage:
  *   pfs_lease_hold <cluster> <pbdname> <hostid> [rw|ro|promote]
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-delay-prepare <ms>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-delay-acquire <ms>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-suspend-acquire <ms>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-clock-offset <sec>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-bad-read <target_hostid> <corrupt|eio> <ms>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-slow-corrupt <target_hostid> <delay_ms> <eio_ms> [nochange]
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-kill-timer-fail <create|arm|rearm>
  *   pfs_lease_hold <cluster> <pbdname> <rw_hostid> demote <ro_hostid>
  *   pfs_lease_hold <cluster> <pbdname> <writer_hostid> corrupt-sector <target_hostid> <badmagic|badchecksum>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> self-corrupt-renew
@@ -16,7 +23,42 @@
  *
  * Modes:
  *   rw      — mount RW, print "MOUNTED", block until SIGTERM, unmount.
+ *             If the mount fails, print "MOUNT_FAILED:<errno>" and exit 2;
+ *             so do all modes described as "like rw".
  *   ro      — mount RO, print "MOUNTED", block until SIGTERM, unmount.
+ *   rw-delay-prepare — like rw, but RW lease acquisition sleeps <ms> after
+ *             the live-holder check and before the prepare phase, printing
+ *             "PREPARE_DELAY" before the sleep and "PREPARE_RESUMED" after.
+ *             Lets a test have another host acquire inside that window.
+ *             Used by Group M tests.
+ *   rw-delay-acquire — like rw-delay-prepare, but sleeps after verify and
+ *             before writing the RW record, printing "ACQUIRE_DELAY" and
+ *             "ACQUIRE_RESUMED".  Used by Group M tests.
+ *   rw-suspend-acquire — like rw-delay-acquire, but the pause emulates a
+ *             system suspend: afterwards this host's CLOCK_MONOTONIC
+ *             readings for its lease deadlines exclude the pause, as a
+ *             suspend would (CLOCK_BOOTTIME and CLOCK_REALTIME count it).
+ *             Used by Group M tests.
+ *   rw-clock-offset — like rw, but every timestamp this host writes into
+ *             its lease record is shifted by <sec> seconds (may be
+ *             negative), as if its clock were skewed.  Used by Group M
+ *             tests.
+ *   rw-bad-read — like rw, but for <ms> after this host first reads
+ *             target_hostid's lease sector, every read of that sector
+ *             comes back corrupt (checksum field flipped) or fails with
+ *             EIO.  Used by Group I tests.
+ *   rw-slow-corrupt — like rw, but this host's reads of target_hostid's
+ *             lease sector are replaced, emulating a writer that is alive
+ *             but writes as late as its kill deadline allows: for the
+ *             first <eio_ms> they fail with EIO; the next read takes an
+ *             extra <delay_ms> and returns corrupt bytes A; reads return A
+ *             until paxos_lease_duration - 0.5s after that read returned,
+ *             then different corrupt bytes B (with "nochange", always A:
+ *             a dead writer).  Used by Group I tests.
+ *   rw-kill-timer-fail — like rw, but setting up the lease kill timer
+ *             fails: creating it (create), every arming of it (arm), or
+ *             every arming after the first, i.e. when renewals push the
+ *             deadline out (rearm).  Used by Group N tests.
  *   promote — mount RO, print "MOUNTED_RO", block until SIGUSR1; then call
  *             pfs_remount() to promote to RW in-place.  On success prints
  *             "MOUNTED_RW"; on failure prints "REMOUNT_FAILED:<errno>".
@@ -30,9 +72,9 @@
  *             corrupt pfs_host_record into target_hostid's paxos sector via
  *             pfs_write_raw_host_sector (same I/O path as pfs_rw_lease_acquire).
  *             Prints "CORRUPT_WRITTEN" on success and exits.  Used by Group I
- *             tests to verify that pfs_host_record_read returns an error for
- *             corrupt sectors and that pfs_rw_lease_check skips them instead
- *             of treating them as live holders.
+ *             tests to verify that an RW mount neither treats a corrupt
+ *             sector as a live holder nor skips it, but waits until its
+ *             bytes have stayed the same for the expiry window.
  *   demote  — simulates a pfsd server with one RW client (rw_hostid) and one
  *             RO client (ro_hostid, passed as argv[5]).  Mounts via
  *             pfs_mount_acquire so both clients are tracked in the pfsd
@@ -70,6 +112,11 @@
  *             same host.
  *   refcount-three-client — three clients (A=RW, B=RO, C=RO) with chained
  *             release/demote/umount verifying host_id transfer at each step.
+ *
+ * Every mode acts as a host of its own: pfs_mount skips the node-local lock
+ * that admits one RW mount per node at a time (pfs_mount_test_skip_node_lock),
+ * as separate hosts never share it.  Otherwise RW mounts racing on this one
+ * machine would fail with EACCES before reaching the lease protocol.
  *
  * Exit codes:
  *   0  — clean lifecycle
@@ -115,7 +162,11 @@ mode_rw_ro(const char *cluster, const char *pbdname, int hostid,
 	int flags = (strcmp(mode, "ro") == 0) ? PFS_RD : PFS_RDWR;
 	int r = pfs_mount(cluster, pbdname, hostid, flags);
 	if (r != 0) {
-		fprintf(stderr, "pfs_mount failed: %d\n", r);
+		int err = errno;
+
+		fprintf(stderr, "pfs_mount failed: %d, errno %d\n", r, err);
+		printf("MOUNT_FAILED:%d\n", err);
+		fflush(stdout);
 		return 2;
 	}
 
@@ -127,6 +178,221 @@ mode_rw_ro(const char *cluster, const char *pbdname, int hostid,
 
 	pfs_umount(pbdname);
 	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+
+static long g_lease_delay_ms;
+
+/* Print "<step>_DELAY", sleep g_lease_delay_ms, print "<step>_RESUMED". */
+static void
+lease_delay(const char *step)
+{
+	struct timespec ts;
+
+	printf("%s_DELAY\n", step);
+	fflush(stdout);
+	ts.tv_sec = g_lease_delay_ms / 1000;
+	ts.tv_nsec = (g_lease_delay_ms % 1000) * 1000000;
+	while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
+		;
+	printf("%s_RESUMED\n", step);
+	fflush(stdout);
+}
+
+static void
+delay_before_prepare(pfs_mount_t *mnt)
+{
+	lease_delay("PREPARE");
+}
+
+static void
+delay_before_acquire(pfs_mount_t *mnt)
+{
+	lease_delay("ACQUIRE");
+}
+
+/* Emulated suspend time, which CLOCK_MONOTONIC does not count. */
+static int64_t g_suspended_ns;
+
+static void
+suspend_clock_hook(clockid_t clock, struct timespec *ts)
+{
+	int64_t ns;
+
+	if (clock != CLOCK_MONOTONIC)
+		return;
+	ns = (int64_t)ts->tv_sec * 1000000000 + ts->tv_nsec - g_suspended_ns;
+	ts->tv_sec = ns / 1000000000;
+	ts->tv_nsec = ns % 1000000000;
+}
+
+static void
+suspend_before_acquire(pfs_mount_t *mnt)
+{
+	lease_delay("ACQUIRE");
+	g_suspended_ns += (int64_t)g_lease_delay_ms * 1000000;
+}
+
+static int
+mode_rw_delay_prepare(const char *cluster, const char *pbdname, int hostid,
+    long delay_ms)
+{
+	g_lease_delay_ms = delay_ms;
+	pfs_rw_lease_test_before_prepare = delay_before_prepare;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static int
+mode_rw_delay_acquire(const char *cluster, const char *pbdname, int hostid,
+    long delay_ms)
+{
+	g_lease_delay_ms = delay_ms;
+	pfs_rw_lease_test_before_acquire = delay_before_acquire;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static int
+mode_rw_suspend_acquire(const char *cluster, const char *pbdname, int hostid,
+    long delay_ms)
+{
+	g_lease_delay_ms = delay_ms;
+	pfs_rw_lease_test_before_acquire = suspend_before_acquire;
+	pfs_rw_lease_test_clock_hook = suspend_clock_hook;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static int
+mode_rw_clock_offset(const char *cluster, const char *pbdname, int hostid,
+    int64_t offset)
+{
+	pfs_rw_lease_test_clock_offset = offset;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static uint32_t g_bad_read_host;
+static bool g_bad_read_eio;
+static long g_bad_read_ms;
+
+static int
+bad_read_hook(pfs_mount_t *mnt, uint32_t host_id, void *sector)
+{
+	static struct timespec start;
+	static bool started;
+	struct timespec now;
+
+	if (host_id != g_bad_read_host)
+		return 0;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (!started) {
+		start = now;
+		started = true;
+	}
+	if ((now.tv_sec - start.tv_sec) * 1000 +
+	    (now.tv_nsec - start.tv_nsec) / 1000000 >= g_bad_read_ms)
+		return 0;
+	if (g_bad_read_eio)
+		return -EIO;
+	((pfs_host_record_t *)sector)->hr_checksum ^= 1;
+	return 0;
+}
+
+static int
+mode_rw_bad_read(const char *cluster, const char *pbdname, int hostid,
+    uint32_t target_hostid, const char *kind, long ms)
+{
+	if (strcmp(kind, "corrupt") != 0 && strcmp(kind, "eio") != 0) {
+		fprintf(stderr, "rw-bad-read: kind must be corrupt or eio\n");
+		return 1;
+	}
+	g_bad_read_host = target_hostid;
+	g_bad_read_eio = strcmp(kind, "eio") == 0;
+	g_bad_read_ms = ms;
+	pfs_rw_lease_test_read_hook = bad_read_hook;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static uint32_t g_slow_host;
+static long g_slow_delay_ms;
+static long g_slow_eio_ms;
+static bool g_slow_change;
+
+static int64_t
+mono_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int
+slow_corrupt_hook(pfs_mount_t *mnt, uint32_t host_id, void *sector)
+{
+	static int64_t first_ms = -1;	/* first read of the target */
+	static int64_t seen_ms = -1;	/* when bytes A were returned */
+	pfs_host_record_t *hr = (pfs_host_record_t *)sector;
+
+	if (host_id != g_slow_host)
+		return 0;
+	if (first_ms < 0)
+		first_ms = mono_ms();
+	if (seen_ms < 0) {
+		if (mono_ms() - first_ms < g_slow_eio_ms)
+			return -EIO;
+		usleep(g_slow_delay_ms * 1000);
+		seen_ms = mono_ms();
+	}
+
+	/* bytes A: zero record with a bad checksum; bytes B: also bad flags */
+	memset(hr, 0, sizeof(*hr));
+	hr->hr_checksum = 1;
+	if (g_slow_change &&
+	    mono_ms() - seen_ms >= pfs_paxos_lease_duration() * 1000 - 500)
+		hr->hr_flags = 1;
+	return 0;
+}
+
+static int
+mode_rw_slow_corrupt(const char *cluster, const char *pbdname, int hostid,
+    uint32_t target_hostid, long delay_ms, long eio_ms, bool change)
+{
+	g_slow_host = target_hostid;
+	g_slow_delay_ms = delay_ms;
+	g_slow_eio_ms = eio_ms;
+	g_slow_change = change;
+	pfs_rw_lease_test_read_hook = slow_corrupt_hook;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
+}
+
+static const char *g_kill_timer_fail;
+static int g_kill_timer_arms;
+
+static int
+kill_timer_fail_hook(bool create)
+{
+	if (create)
+		return strcmp(g_kill_timer_fail, "create") == 0 ? -EAGAIN : 0;
+	if (strcmp(g_kill_timer_fail, "arm") == 0)
+		return -EINVAL;
+	if (strcmp(g_kill_timer_fail, "rearm") == 0 && g_kill_timer_arms++ > 0)
+		return -EINVAL;
+	return 0;
+}
+
+static int
+mode_rw_kill_timer_fail(const char *cluster, const char *pbdname, int hostid,
+    const char *step)
+{
+	if (strcmp(step, "create") != 0 && strcmp(step, "arm") != 0 &&
+	    strcmp(step, "rearm") != 0) {
+		fprintf(stderr,
+		    "rw-kill-timer-fail: step must be create, arm or rearm\n");
+		return 1;
+	}
+	g_kill_timer_fail = step;
+	pfs_rw_lease_test_kill_timer_hook = kill_timer_fail_hook;
+	return mode_rw_ro(cluster, pbdname, hostid, "rw");
 }
 
 /* ------------------------------------------------------------------ */
@@ -1018,8 +1284,90 @@ main(int argc, char *argv[])
 	signal(SIGHUP,  sighandler);
 	signal(SIGUSR1, sigusr1handler);
 
+	pfs_mount_test_skip_node_lock = true;
+
 	if (strcmp(mode, "rw") == 0 || strcmp(mode, "ro") == 0)
 		return mode_rw_ro(cluster, pbdname, hostid, mode);
+
+	if (strcmp(mode, "rw-delay-prepare") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-delay-prepare <ms>\n");
+			return 1;
+		}
+		return mode_rw_delay_prepare(cluster, pbdname, hostid,
+		    atol(argv[5]));
+	}
+
+	if (strcmp(mode, "rw-suspend-acquire") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-suspend-acquire <ms>\n");
+			return 1;
+		}
+		return mode_rw_suspend_acquire(cluster, pbdname, hostid,
+		    atol(argv[5]));
+	}
+
+	if (strcmp(mode, "rw-delay-acquire") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-delay-acquire <ms>\n");
+			return 1;
+		}
+		return mode_rw_delay_acquire(cluster, pbdname, hostid,
+		    atol(argv[5]));
+	}
+
+	if (strcmp(mode, "rw-slow-corrupt") == 0) {
+		if (argc < 8) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-slow-corrupt <target_hostid>"
+			    " <delay_ms> <eio_ms> [nochange]\n");
+			return 1;
+		}
+		return mode_rw_slow_corrupt(cluster, pbdname, hostid,
+		    (uint32_t)atoi(argv[5]), atol(argv[6]), atol(argv[7]),
+		    !(argc >= 9 && strcmp(argv[8], "nochange") == 0));
+	}
+
+	if (strcmp(mode, "rw-bad-read") == 0) {
+		if (argc < 8) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-bad-read <target_hostid>"
+			    " <corrupt|eio> <ms>\n");
+			return 1;
+		}
+		return mode_rw_bad_read(cluster, pbdname, hostid,
+		    (uint32_t)atoi(argv[5]), argv[6], atol(argv[7]));
+	}
+
+	if (strcmp(mode, "rw-kill-timer-fail") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-kill-timer-fail <create|arm|rearm>\n");
+			return 1;
+		}
+		return mode_rw_kill_timer_fail(cluster, pbdname, hostid,
+		    argv[5]);
+	}
+
+	if (strcmp(mode, "rw-clock-offset") == 0) {
+		if (argc < 6) {
+			fprintf(stderr,
+			    "usage: pfs_lease_hold <cluster> <pbdname>"
+			    " <hostid> rw-clock-offset <sec>\n");
+			return 1;
+		}
+		return mode_rw_clock_offset(cluster, pbdname, hostid,
+		    atoll(argv[5]));
+	}
 
 	if (strcmp(mode, "promote") == 0)
 		return mode_promote(cluster, pbdname, hostid);
