@@ -1714,13 +1714,12 @@ pfs_log_thread_entry(void *arg)
 				    (long long)stale,
 				    (long long)pfs_paxos_lease_duration());
 				/*
-				 * Watchdog (if enabled) fires automatically
-				 * because we stopped petting it above.
-				 * Without a watchdog, self-fence by aborting
-				 * once the lease window has elapsed — at that
-				 * point another host is allowed to mount RW
-				 * and continuing to run risks split-brain
-				 * writes.
+				 * The kill timer fires on its own because we
+				 * stopped petting it above.  As a backstop,
+				 * also self-fence by aborting once the lease
+				 * window has elapsed — at that point another
+				 * host is allowed to mount RW and continuing
+				 * to run risks split-brain writes.
 				 */
 				if (stale >= pfs_paxos_lease_duration()) {
 					pfs_etrace("fatal: RW lease expired "

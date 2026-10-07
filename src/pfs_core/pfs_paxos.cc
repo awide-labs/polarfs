@@ -68,6 +68,7 @@ int (*pfs_rw_lease_test_read_hook)(pfs_mount_t *mnt, uint32_t host_id,
     void *sector);
 int64_t pfs_rw_lease_test_clock_offset;
 void (*pfs_rw_lease_test_clock_hook)(clockid_t clock, struct timespec *ts);
+int (*pfs_rw_lease_test_kill_timer_hook)(bool create);
 #endif
 
 /*
@@ -630,9 +631,25 @@ pfs_leader_load(pfs_mount_t *mnt)
 			return -EBUSY;
 		}
 
-		mnt->mnt_rw_lease_held = true;
+		/*
+		 * Without the kill timer nothing fences us if we stall: the
+		 * log thread's self-fence runs on the thread that would be
+		 * stalled, and other threads could keep writing after another
+		 * host takes over.  Give the lease back instead.
+		 *
+		 * timer_create() fails with EAGAIN when the kernel is short of
+		 * resources, but pfs_mount() retries -EAGAIN endlessly, so
+		 * report that as -ENOMEM.
+		 */
+		rv = paxos_watchdog_open(mnt);
+		if (rv < 0) {
+			pfs_etrace("rw_lease: host_id=%u cannot arm lease "
+			    "watchdog, giving up\n", mnt->mnt_host_id);
+			pfs_host_record_clear(mnt, mnt->mnt_host_id);
+			return rv == -EAGAIN ? -ENOMEM : rv;
+		}
 
-		paxos_watchdog_open(mnt);
+		mnt->mnt_rw_lease_held = true;
 	} else {
 		mnt->mnt_host_generation = 0;
 	}
@@ -1320,7 +1337,8 @@ pfs_rw_lease_verify_prepare(pfs_mount_t *mnt, const lease_dead_set_t *dead)
  *             other host's sector is unreadable or corrupt, except as
  *             verify_prepare allows.  That does not make us the holder yet:
  *             pfs_leader_load still checks that our RW record has not
- *             expired, and gives the lease back if it has.
+ *             expired and arms the lease watchdog, and gives the lease
+ *             back if either fails.
  *  -EBUSY  — a higher-ballot host is acquiring concurrently, or another
  *             host's sector is unreadable or corrupt beyond that exception;
  *             caller must clear our sector and abort the mount
@@ -1695,11 +1713,14 @@ paxos_kill_handler(int sig)
  * Arm the kill timer to fire paxos_lease_duration after our last lease write
  * was issued (not after it completed): other hosts may treat our record as
  * expired from then on, so we must be dead by that point.
+ *
+ * On failure the timer keeps whatever deadline it had.
  */
-static void
+static int
 paxos_kill_timer_arm(pfs_mount_t *mnt)
 {
 	struct itimerspec its = {};
+	int err = 0;
 
 	/*
 	 * Absolute deadline: a relative timeout computed from a fresh reading
@@ -1722,36 +1743,63 @@ paxos_kill_timer_arm(pfs_mount_t *mnt)
 		its.it_value.tv_sec = ns / 1000000000;
 		its.it_value.tv_nsec = ns % 1000000000;
 	}
+	if (pfs_rw_lease_test_kill_timer_hook)
+		err = pfs_rw_lease_test_kill_timer_hook(false);
 #endif
-	timer_settime(mnt->mnt_kill_timer, TIMER_ABSTIME, &its, NULL);
+	if (err == 0 &&
+	    timer_settime(mnt->mnt_kill_timer, TIMER_ABSTIME, &its, NULL) < 0)
+		err = -errno;
+	if (err < 0)
+		pfs_etrace("watchdog: arming kill timer failed: %d\n", err);
+	return err;
 }
 
-void
+/*
+ * Arm the timer-kill watchdog for a lease we have just acquired.  It is
+ * mandatory: fails, leaving nothing armed, if the timer cannot be set up.
+ */
+int
 paxos_watchdog_open(pfs_mount_t *mnt)
 {
+	int err = 0;
+
 	/* Timer-kill watchdog (mandatory) */
 	struct sigaction sa = {};
 	sa.sa_handler = paxos_kill_handler;
 	sa.sa_flags = SA_RESETHAND;  /* one-shot: restore default after firing */
-	sigaction(SIGUSR2, &sa, NULL);
+	if (sigaction(SIGUSR2, &sa, NULL) < 0) {
+		err = -errno;
+		pfs_etrace("watchdog_open: sigaction failed: %d\n", err);
+		return err;
+	}
 
 	struct sigevent sev = {};
 	sev.sigev_notify = SIGEV_SIGNAL;
 	sev.sigev_signo = SIGUSR2;
-	if (timer_create(LEASE_CLOCK, &sev, &mnt->mnt_kill_timer) == 0) {
-		paxos_kill_timer_arm(mnt);
-		mnt->mnt_kill_timer_armed = true;
-		pfs_itrace("watchdog_open: timer-kill armed "
-		    "(SIGUSR2 in %llds) pbd=%s\n",
-		    (long long)paxos_lease_duration, mnt->mnt_pbdname);
-	} else {
-		pfs_etrace("watchdog_open: timer_create failed errno=%d, "
-		    "falling back to log-thread self-fence only\n", errno);
+#ifdef PFS_TEST
+	if (pfs_rw_lease_test_kill_timer_hook)
+		err = pfs_rw_lease_test_kill_timer_hook(true);
+#endif
+	if (err == 0 &&
+	    timer_create(LEASE_CLOCK, &sev, &mnt->mnt_kill_timer) < 0)
+		err = -errno;
+	if (err < 0) {
+		pfs_etrace("watchdog_open: timer_create failed: %d\n", err);
+		return err;
 	}
+	err = paxos_kill_timer_arm(mnt);
+	if (err < 0) {
+		timer_delete(mnt->mnt_kill_timer);
+		return err;
+	}
+	mnt->mnt_kill_timer_armed = true;
+	pfs_itrace("watchdog_open: timer-kill armed "
+	    "(SIGUSR2 in %llds) pbd=%s\n",
+	    (long long)paxos_lease_duration, mnt->mnt_pbdname);
 
 	/* /dev/watchdog (optional) */
 	if (!paxos_watchdog_enable)
-		return;
+		return 0;
 	mnt->mnt_wdog_fd = open("/dev/watchdog", O_WRONLY | O_CLOEXEC);
 	if (mnt->mnt_wdog_fd < 0)
 		pfs_etrace("watchdog_open: cannot open /dev/watchdog errno=%d\n",
@@ -1759,14 +1807,18 @@ paxos_watchdog_open(pfs_mount_t *mnt)
 	else
 		pfs_itrace("watchdog_open: /dev/watchdog armed (fd=%d)\n",
 		    mnt->mnt_wdog_fd);
+	return 0;
 }
 
 void
 paxos_watchdog_pet(pfs_mount_t *mnt)
 {
-	/* Push the timer-kill deadline out from the renewal just written */
+	/*
+	 * Push the timer-kill deadline out from the renewal just written.  If
+	 * that fails the earlier deadline stands, which still fences us.
+	 */
 	if (mnt->mnt_kill_timer_armed)
-		paxos_kill_timer_arm(mnt);
+		(void)paxos_kill_timer_arm(mnt);
 
 	/* Pet /dev/watchdog */
 	if (mnt->mnt_wdog_fd >= 0)

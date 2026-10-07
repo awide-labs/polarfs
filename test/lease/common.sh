@@ -119,7 +119,9 @@ assert_log_contains() {
 }
 
 # errno values pfs_lease_hold reports as MOUNT_FAILED:<errno>.
+ENOMEM=12
 EBUSY=16
+EINVAL=22
 
 # Current size of $PFS_LOG: pass it to refusal_problem as <log_offset> to
 # look only at what is logged from now on.
@@ -572,7 +574,8 @@ start_watchdog_stall_holder() {
 
 # Send SIGUSR1 to the watchdog-stall holder (suspends log, stops petting).
 # Then wait for the process to die (killed by watchdog timer).
-# Returns 0 if the process was killed by signal (exit >= 128).
+# Returns 0 if the process was killed by SIGKILL (exit 137), as the
+# watchdog's signal handler does.
 # Timeout: 2 × paxos_lease_duration + buffer.
 trigger_watchdog_stall() {
     local pid="${1:-${HOLDER_PID:-}}"
@@ -598,8 +601,7 @@ trigger_watchdog_stall() {
             wait "$pid" 2>/dev/null || exit_code=$?
             rm -f "$tmpout"; WATCHDOG_STALL_TMPOUT=""
             HOLDER_PID=""
-            # Killed by signal → exit code >= 128 (137 for SIGKILL)
-            if [[ $exit_code -ge 128 ]]; then
+            if [[ $exit_code -eq 137 ]]; then
                 return 0
             fi
             return 1
