@@ -261,12 +261,6 @@ paxos_leader_write(int devi, char *buf, size_t buflen)
 	return 0;
 }
 
-int
-paxos_leader_reset(int devi, const char *pbdname)
-{
-	return 0;
-}
-
 static int
 stream_input(void *buf, ssize_t size)
 {

@@ -52,6 +52,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   successful despite a journal write failure, then disappear after a crash.
   These failures now follow normal error handling and retry rules. This
   concerns the PolarFS filesystem journal (XCOM-202)
+- A filesystem copied with `fscp`, or restored from a chunk backup, kept the
+  source's read-write lease records. Its first read-write mount could then
+  stall for about half a minute, waiting out a lease that no host holds on
+  the copy. These copies now start with no lease records (XCOM-202)
 - `pfs fscp -c` checksummed only the last 128 KB read of each 4 MB block
   (the last `-n` group of fragments), so corruption elsewhere in the block
   went undetected and the check reported a pass. The whole block is now

@@ -20,6 +20,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "pfs_impl.h"
+
 typedef struct pfs_mount 		pfs_mount_t;
 
 #define NAME_ID_SIZE 			48
@@ -54,6 +56,19 @@ typedef struct pfs_leader_record {
 	uint32_t checksum;
 } pfs_leader_record_t;
 
+/*
+ * The sector holding a leader record, which sits at its start.  Use it to
+ * read or write the record with device I/O, which moves whole sectors and,
+ * under O_DIRECT, wants sector-aligned buffers.
+ */
+typedef union alignas(PBD_SECTOR_SIZE) pfs_leader_sector {
+	pfs_leader_record_t	ls_lr;
+	char			ls_buf[PBD_SECTOR_SIZE];
+} pfs_leader_sector_t;
+
+static_assert(sizeof(pfs_leader_sector_t) == PBD_SECTOR_SIZE,
+    "pfs_leader_sector_t must be exactly one sector");
+
 /* LR size only relating to paxos */
 #define	LR_PAXOS_SIZE		offsetof(pfs_leader_record, tail_txid)
 #define	LEADER_CHECKSUM_LEN	offsetof(pfs_leader_record, checksum)
@@ -85,6 +100,7 @@ int 	pfs_leader_read(pfs_mount_t *mnt, pfs_leader_record_t *leader_ret);
 
 int	paxos_hostid_local_lock(const char *pbdname, int hostid, const char *caller);
 void	paxos_hostid_local_unlock(int fd);
+int	paxos_leader_reset(int devi, const char *pbdname);
 
 int read_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr,
 		uint32_t *checksum);
