@@ -152,9 +152,20 @@ journal_dump(pfs_mount_t *mnt, uint64_t tailoff, uint64_t headoff, uint64_t logs
 	if (fd < 0)
 		return fd;
 
-	err = 0;
+	/*
+	 * Sector-aligned, so that O_DIRECT reads use it without bouncing in
+	 * devio.  That also aligns it for the log entries read into it.
+	 */
+	static_assert(PBD_SECTOR_SIZE % alignof(pfs_logentry_phy_t) == 0,
+	    "sector-aligned buffers must suit log entries");
 	bufsize = PFS_FRAG_SIZE;
-	le = lebuf = (pfs_logentry_phy_t *)malloc(bufsize);
+	err = pfs_mem_memalign((void **)&lebuf, PBD_SECTOR_SIZE, bufsize,
+	    M_FRAG);
+	if (err != 0) {
+		pfs_close(fd);
+		ERR_RETVAL(err);
+	}
+	le = lebuf;
 	memset(lebuf, 0, bufsize);
 	nle = 0;
 	for (off = tailoff; ; le++) {
@@ -180,7 +191,7 @@ journal_dump(pfs_mount_t *mnt, uint64_t tailoff, uint64_t headoff, uint64_t logs
 	}
 
 	pfs_close(fd);
-	free(lebuf);
+	pfs_mem_free(lebuf, M_FRAG);
 	return err;
 }
 
@@ -189,19 +200,21 @@ journal_locate(pfs_mount_t *mnt, uint64_t *tailoff, uint64_t *headoff,
     uint64_t *logsize)
 {
 	int err, fd;
-	char buf[PBD_SECTOR_SIZE];
-	pfs_leader_record_t *lr;
+	pfs_leader_record_t leader, *lr = &leader;
 
 	fd = file_open(mnt, PAXOS_FILE_MONO);
 	if (fd < 0)
 		return fd;
 
-	err = pfs_pread(fd, buf, sizeof(buf), 0);
+	err = pfs_pread(fd, &leader, sizeof(leader), 0);
 	if (err < 0) {
 		pfs_close(fd);
 		return err;
 	}
-	lr = (pfs_leader_record_t *)buf;
+	if (err != sizeof(leader)) {
+		pfs_close(fd);
+		ERR_RETVAL(EIO);
+	}
 
 	pfs_itrace("journal status: size %lu, offset [%lu, %lu), txid [%ld, %ld)\n",
 	    lr->log_size, lr->tail_offset, lr->head_offset,
