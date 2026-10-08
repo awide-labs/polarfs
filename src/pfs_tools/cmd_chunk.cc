@@ -144,8 +144,9 @@ static const char	*metapath = "/var/run/pfs";
 static const char	*cluster;
 static const char	*pbdname;
 static int		ioch_desc = -1;
+/* sector-aligned, so that O_DIRECT I/O doesn't bounce it in devio */
+alignas(PBD_SECTOR_SIZE)
 static char		blkbuf[PFS_BLOCK_SIZE];
-static char		sectbuf[PBD_SECTOR_SIZE];
 
 static struct option chunk_long_opts[] = {
 	{ "mode",		required_argument,	NULL,	'm' },
@@ -224,20 +225,19 @@ getopt_chunk(int argc, char *argv[], cmd_opts_t *co)
 
 
 static int
-paxos_leader_read(int iodesc, char *buf, size_t buflen)
+paxos_leader_read(int iodesc, pfs_leader_sector_t *ls)
 {
 	int err;
-	pfs_leader_record_t *lr;
+	pfs_leader_record_t *lr = &ls->ls_lr;
 
-	PFS_ASSERT(buflen == PBD_SECTOR_SIZE);
-	memset(buf, 0, buflen);
-	err = pfsdev_pread(iodesc, buf, buflen, PFS_BLOCK_SIZE);
+	memset(ls, 0, sizeof(*ls));
+	err = pfsdev_pread(iodesc, ls->ls_buf, sizeof(ls->ls_buf),
+	    PFS_BLOCK_SIZE);
 	if (err < 0) {
 		pfs_etrace("failed to read paxos leader: %d\n", err);
 		return err;
 	}
 
-	lr = (pfs_leader_record_t *)buf;
 	if (lr->checksum != leader_checksum(lr)) {
 		pfs_etrace("paxos leader checksum %u is invalid\n",
 		    lr->checksum);
@@ -247,14 +247,14 @@ paxos_leader_read(int iodesc, char *buf, size_t buflen)
 }
 
 static int
-paxos_leader_write(int devi, char *buf, size_t buflen)
+paxos_leader_write(int devi, pfs_leader_sector_t *ls)
 {
 	int err;
 
-	PFS_ASSERT(buflen == PBD_SECTOR_SIZE);
-	err = pfsdev_pwrite(devi, buf, buflen, PFS_BLOCK_SIZE);
+	err = pfsdev_pwrite(devi, ls->ls_buf, sizeof(ls->ls_buf),
+	    PFS_BLOCK_SIZE);
 	if (err < 0) {
-		pfs_etrace("failed to write paxos leader: %d\n");
+		pfs_etrace("failed to write paxos leader: %d\n", err);
 		return err;
 	}
 
@@ -466,8 +466,8 @@ metacache_check_leader(int fd, int iochd)
 {
 	int err;
 	ssize_t rlen;
-	char buf[PBD_SECTOR_SIZE];
-	pfs_leader_record_t flr, *lr;
+	pfs_leader_sector_t ls;
+	pfs_leader_record_t flr;
 
 	/* read paxos leader from metacache */
 	rlen = pread(fd, &flr, sizeof(flr), 0);
@@ -483,11 +483,10 @@ metacache_check_leader(int fd, int iochd)
 	}
 
 	/* check paxos leader */
-	err = paxos_leader_read(iochd, buf, sizeof(buf));
+	err = paxos_leader_read(iochd, &ls);
 	if (err < 0)
 		ERR_RETVAL(EIO);
-	lr = (pfs_leader_record_t *)buf;
-	if (memcmp(lr, &flr, sizeof(*lr))) {
+	if (memcmp(&ls.ls_lr, &flr, sizeof(flr))) {
 		pfs_itrace("paxos leaders on pbd and metafile are different\n");
 		ERR_RETVAL(EINVAL);
 	}
@@ -503,7 +502,8 @@ metacache_check_bust(int fd, int iochd, uint32_t *nck, uint32_t *nsumck)
 	struct stat st;
 	uint32_t fcrc, crc, ckid, fnsumck, fnck;
 	ssize_t rlen, datasz, offset;
-	pfs_chunk_phy_t *phyck;
+	pfs_chunk_sector_t cks;
+	pfs_chunk_phy_t *phyck = &cks.cs_ck;
 	bool bust[PFS_NBT_PERCHUNK];
 	const ssize_t bustsz = PFS_NBT_PERCHUNK * sizeof(bool);
 
@@ -582,13 +582,12 @@ metacache_check_bust(int fd, int iochd, uint32_t *nck, uint32_t *nsumck)
 	 * compare valid chunk number in metacache with nchunk in
 	 * the first chunk header on pbd.
 	 */
-	memset(sectbuf, 0, sizeof(sectbuf));
-	err = pfsdev_pread(iochd, sectbuf, PBD_SECTOR_SIZE, 0);
+	memset(&cks, 0, sizeof(cks));
+	err = pfsdev_pread(iochd, cks.cs_buf, sizeof(cks.cs_buf), 0);
 	if (err < 0) {
 		pfs_etrace("cant read the first chunk header\n");
 		ERR_RETVAL(EIO);
 	}
-	phyck = (pfs_chunk_phy_t *)sectbuf;
 	if (!chunk_isvalid(phyck, 0))
 		ERR_RETVAL(EINVAL);
 	if (fnck != phyck->ck_nchunk) {
@@ -644,6 +643,7 @@ metacache_update(int fd, uint32_t *nchunk, uint32_t *nsumck)
 	ssize_t offset, wlen;
 	bool bust[PFS_NBT_PERCHUNK];
 	const ssize_t bustsz = PFS_NBT_PERCHUNK * sizeof(bool);
+	pfs_leader_sector_t ls;
 
 	err = ftruncate(fd, 0);
 	if (err < 0) {
@@ -704,11 +704,10 @@ metacache_update(int fd, uint32_t *nchunk, uint32_t *nsumck)
 	}
 
 	/* cache paxos leader */
-	memset(sectbuf, 0, PBD_SECTOR_SIZE);
-	err = paxos_leader_read(mnt->mnt_ioch_desc, sectbuf, sizeof(sectbuf));
+	err = paxos_leader_read(mnt->mnt_ioch_desc, &ls);
 	if (err < 0)
 		ERR_GOTO(EIO, out);
-	wlen = pwrite(fd, sectbuf, PBD_SECTOR_SIZE, 0);
+	wlen = pwrite(fd, ls.ls_buf, sizeof(ls.ls_buf), 0);
 	if (wlen != PBD_SECTOR_SIZE)
 		ERR_GOTO(EIO, out);
 

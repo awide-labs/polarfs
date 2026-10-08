@@ -112,6 +112,19 @@ typedef struct pfs_chunk_phy {
 	uint32_t	ck_checksum;
 } pfs_chunk_phy_t;
 
+/*
+ * The sector holding a chunk header, which sits at its start.  Use it to
+ * read or write the header with device I/O, which moves whole sectors and,
+ * under O_DIRECT, wants sector-aligned buffers.
+ */
+typedef union alignas(PBD_SECTOR_SIZE) pfs_chunk_sector {
+	pfs_chunk_phy_t	cs_ck;
+	char		cs_buf[PBD_SECTOR_SIZE];
+} pfs_chunk_sector_t;
+
+static_assert(sizeof(pfs_chunk_sector_t) == PBD_SECTOR_SIZE,
+    "pfs_chunk_sector_t must be exactly one sector");
+
 
 typedef struct pfs_metaset {
 	pfs_chunk_t	*ms_chunk;
