@@ -476,16 +476,17 @@ check_global_security(int iochd, const char *pbdname, uint32_t ckid, bool force,
     const char *caller)
 {
 	ssize_t rlen;
-	char buf[PBD_SECTOR_SIZE];
+	pfs_chunk_sector_t cks;
 
-	rlen = pfsdev_pread(iochd, buf, sizeof(buf), ckid*PBD_CHUNK_SIZE/* bda*/);
+	rlen = pfsdev_pread(iochd, cks.cs_buf, sizeof(cks.cs_buf),
+	    ckid*PBD_CHUNK_SIZE/* bda*/);
 	if (rlen < 0) {
 		pfs_etrace("%s cant read chunk %u header, err=%d\n", caller,
 		    ckid, (int)rlen);
 		return rlen;
 	}
 
-	if (chunk_isvalid((const pfs_chunk_phy_t *)buf, ckid)) {
+	if (chunk_isvalid(&cks.cs_ck, ckid)) {
 		if (force == false) {
 			pfs_etrace("%s isn't allowed because that chunk %u"
 			    " maybe already formatted. If you are sure to do %s,"
@@ -537,8 +538,8 @@ static int
 verify_args(int64_t oldcknum, int64_t newcknum)
 {
 	int err, i;
-	char buf[PBD_SECTOR_SIZE];
-	pfs_chunk_phy_t *phyck = (pfs_chunk_phy_t *)buf;
+	pfs_chunk_sector_t cks;
+	pfs_chunk_phy_t *phyck = &cks.cs_ck;
 	pfs_metaset_phy_t *ms;
 
 	if (oldcknum <= 0 || oldcknum >= newcknum) {
@@ -556,8 +557,8 @@ verify_args(int64_t oldcknum, int64_t newcknum)
 	/*
 	 * Read the first chunk's header.
 	 */
-	memset(buf, 0, PBD_SECTOR_SIZE);
-	err = pfsdev_pread(ioch_desc, buf, PBD_SECTOR_SIZE, 0);
+	memset(&cks, 0, sizeof(cks));
+	err = pfsdev_pread(ioch_desc, cks.cs_buf, sizeof(cks.cs_buf), 0);
 	if (err < 0) {
 		pfs_etrace("Error in read the first chunk header, err=%d\n", err);
 		return err;
@@ -646,18 +647,19 @@ int
 pfs_make()
 {
 	int err;
-	char buf[PBD_SECTOR_SIZE];
+	pfs_chunk_sector_t cks;
 	uint32_t i, nchunk;
 
 	nchunk = pbd_disksize / pbd_chunksize;
 	for (i = 0; i < nchunk; i++) {
-		memset(buf, 0, PBD_SECTOR_SIZE);
-		err = chunk_init((pfs_chunk_phy_t *)buf, i);
+		memset(&cks, 0, sizeof(cks));
+		err = chunk_init(&cks.cs_ck, i);
 		if (err < 0) {
 			pfs_etrace("Error in init chunk %u\n", i);
 			return err;
 		}
-		err = pfsdev_pwrite(ioch_desc, buf, PBD_SECTOR_SIZE, i * pbd_chunksize);
+		err = pfsdev_pwrite(ioch_desc, cks.cs_buf, sizeof(cks.cs_buf),
+		    i * pbd_chunksize);
 		if (err < 0) {
 			pfs_etrace("Error in pwrite chunk %u header\n", i);
 			return err;
@@ -837,18 +839,19 @@ pfs_grow(int64_t oldcknum, int64_t newcknum)
 {
 	int err;
 	int64_t i;
-	char buf[PBD_SECTOR_SIZE];
-	pfs_chunk_phy_t *phyck = (pfs_chunk_phy_t *)buf;
+	pfs_chunk_sector_t cks;
+	pfs_chunk_phy_t *phyck = &cks.cs_ck;
 
 	/* Format new chunks in [oldcknum, newcknum) */
 	for (i = oldcknum; i < newcknum; i++) {
-		memset(buf, 0, PBD_SECTOR_SIZE);
-		err = chunk_init((pfs_chunk_phy_t *)buf, i);
+		memset(&cks, 0, sizeof(cks));
+		err = chunk_init(phyck, i);
 		if (err < 0) {
 			pfs_etrace("Error in init chunk %ld\n", i);
 			return err;
 		}
-		err = pfsdev_pwrite(ioch_desc, buf, PBD_SECTOR_SIZE, i * pbd_chunksize);
+		err = pfsdev_pwrite(ioch_desc, cks.cs_buf, sizeof(cks.cs_buf),
+		    i * pbd_chunksize);
 		if (err < 0) {
 			pfs_etrace("Error in pwrite chunk %ld header\n", i);
 			return err;
@@ -860,8 +863,9 @@ pfs_grow(int64_t oldcknum, int64_t newcknum)
 	 * MUST modify old chunk header in descending order.
 	 */
 	for (i = oldcknum - 1; i >= 0; i--) {
-		memset(buf, 0, PBD_SECTOR_SIZE);
-		err = pfsdev_pread(ioch_desc, buf, PBD_SECTOR_SIZE, i * pbd_chunksize);
+		memset(&cks, 0, sizeof(cks));
+		err = pfsdev_pread(ioch_desc, cks.cs_buf, sizeof(cks.cs_buf),
+		    i * pbd_chunksize);
 		if (err < 0) {
 			pfs_etrace("Error in read chunk %ld, err=%d\n", i, err);
 			return err;
@@ -872,7 +876,8 @@ pfs_grow(int64_t oldcknum, int64_t newcknum)
 		phyck->ck_checksum = crc32c_compute(phyck, sizeof(*phyck),
 		    offsetof(struct pfs_chunk_phy, ck_checksum));
 
-		err = pfsdev_pwrite(ioch_desc, buf, PBD_SECTOR_SIZE, i * pbd_chunksize);
+		err = pfsdev_pwrite(ioch_desc, cks.cs_buf, sizeof(cks.cs_buf),
+		    i * pbd_chunksize);
 		if (err < 0) {
 			pfs_etrace("Error in write chunk %ld, err=%d\n", i, err);
 			return err;

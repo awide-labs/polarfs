@@ -31,7 +31,6 @@
 #include "cmd_impl.h"
 
 static int		ioch_desc;
-static char 		dumpfs_buf[PBD_SECTOR_SIZE];
 
 #define PBDNAME_MAX_LEN	256
 
@@ -114,13 +113,14 @@ chunk_dump(int chunkid)
 {
 	uint64_t chunksize = PBD_CHUNK_SIZE;
 	int err, i, nchunk;
-	pfs_chunk_phy_t *ck;
+	pfs_chunk_sector_t cks;
+	pfs_chunk_phy_t *ck = &cks.cs_ck;
 
 	i = (chunkid >= 0) ? chunkid : 0;
 	do {
-		ck = (pfs_chunk_phy_t *)dumpfs_buf;
-		memset(ck, 0, PBD_SECTOR_SIZE);
-		err = pfsdev_pread(ioch_desc, ck, PBD_SECTOR_SIZE, i * chunksize);
+		memset(&cks, 0, sizeof(cks));
+		err = pfsdev_pread(ioch_desc, cks.cs_buf, sizeof(cks.cs_buf),
+		    i * chunksize);
 		if (err < 0 || ck->ck_chunksize != chunksize) {
 			pfs_etrace("read %d chunk header @ %ld len %ld failed,"
 			    " err = %d\n", i, i * chunksize, PBD_SECTOR_SIZE);
