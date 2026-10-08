@@ -164,8 +164,6 @@ typedef struct vfs_mgr
 
 extern vfs_mgr pfs;
 
-int	paxos_leader_reset(int devi, const char *pbdname);
-
 typedef struct	user_action {
 	void		*user_func;	/* the real function shall return int */
 	uint32_t	user_nargs;

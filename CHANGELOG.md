@@ -30,6 +30,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   concerns the PolarFS filesystem journal (XCOM-202)
 - Read-write mounts, including promotions of read-only mounts, now fail if
   PolarFS cannot start its lease watchdog (XCOM-202)
+- A filesystem copied with `fscp`, or restored from a chunk backup, kept the
+  source's read-write lease records. Its first read-write mount could then
+  stall for about half a minute, waiting out a lease that no host holds on
+  the copy. These copies now start with no lease records (XCOM-202)
 
 ## [3.1.0] - 2026-10-20
 
