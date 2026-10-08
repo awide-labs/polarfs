@@ -181,11 +181,66 @@ paxos_leader_write(int devi, char *buf, size_t buflen)
 	return 0;
 }
 
-static int
+/*
+ * Prepare the paxos file of a pbd whose blocks were just copied or restored
+ * from another pbd for its first mount.
+ *
+ * The copy brings along the source's per-host lease records (sectors
+ * 1..max_hosts).  They describe hosts of the source, not of this pbd: a
+ * recent RW or PREPARE record, or one torn by copying it while its host
+ * rewrote it, would make the first RW mount here wait out a lease nobody
+ * holds on this pbd, and every record would pass its lease generation on
+ * to this pbd.  Clear them all.  The leader record itself is kept, since
+ * its log pointers describe the copied journal.
+ *
+ * No host may have this pbd mounted, as its lease record is cleared too.
+ */
+int
 paxos_leader_reset(int devi, const char *pbdname)
 {
+	int err;
+	uint64_t i, max_hosts;
+	pfs_leader_sector_t ls;
+	pfs_leader_record_t *lr = &ls.ls_lr;
+
+	/*
+	 * A valid leader record also tells us the paxos file is where we
+	 * are about to write.
+	 */
+	err = paxos_leader_read(devi, ls.ls_buf, sizeof(ls.ls_buf));
+	if (err < 0) {
+		pfs_etrace("pbd %s: cant read paxos leader, err=%d\n",
+		    pbdname, err);
+		return err;
+	}
+
+	if (lr->magic != PFS_LEADER_MAGIC ||
+	    lr->sector_size != PBD_SECTOR_SIZE ||
+	    lr->max_hosts == 0 || lr->max_hosts > DEFAULT_MAX_HOSTS) {
+		pfs_etrace("pbd %s: unexpected paxos leader: magic=%#x, "
+		    "sector_size=%u, max_hosts=%llu\n", pbdname, lr->magic,
+		    lr->sector_size, (unsigned long long)lr->max_hosts);
+		ERR_RETVAL(EINVAL);
+	}
+	max_hosts = lr->max_hosts;
+
+	/* An all-zero sector is an empty host record. */
+	memset(&ls, 0, sizeof(ls));
+	for (i = 1; i <= max_hosts; i++) {
+		err = pfsdev_pwrite(devi, ls.ls_buf, sizeof(ls.ls_buf),
+		    PFS_BLOCK_SIZE + i * PBD_SECTOR_SIZE);
+		if (err < 0) {
+			pfs_etrace("pbd %s: failed to clear paxos host record "
+			    "%llu: %d\n", pbdname, (unsigned long long)i, err);
+			return err;
+		}
+	}
+
+	pfs_itrace("pbd %s: cleared %llu paxos host records\n", pbdname,
+	    (unsigned long long)max_hosts);
 	return 0;
 }
+
 static int
 metacache_open(const char *pbdname, int mode)
 {
