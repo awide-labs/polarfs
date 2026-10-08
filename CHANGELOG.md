@@ -54,6 +54,11 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   Previously, the mount could succeed without this protection against a
   stalled host continuing to write after another host took over (XCOM-202)
 
+- A filesystem copied with `fscp`, or restored from a chunk backup, kept the
+  source's read-write lease records. Its first read-write mount could then
+  stall for about half a minute, waiting out a lease that no host holds on
+  the copy. These copies now start with no lease records (XCOM-202)
+
 ### Performance
 
 - `devstat` and `mountstat` statistics modules significantly slowed down

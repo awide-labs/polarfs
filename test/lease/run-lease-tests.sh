@@ -72,6 +72,7 @@ run_group tc-l-wait-check-edge.sh   "Group L: wait_and_check edge cases (multi-b
 run_group tc-m-ballot.sh            "Group M: ballot-based lease acquisition"
 run_group tc-n-watchdog.sh          "Group N: timer-kill watchdog"
 run_group tc-o-refcount.sh          "Group O: Multi-client refcount"
+run_group tc-p-fscp-reset.sh        "Group P: fscp lease reset"
 
 echo ""
 echo "============================================"
