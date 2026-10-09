@@ -67,7 +67,6 @@ is_aligned(uint64_t v, size_t a)
  * One caller-owned, fd-backed buffer registered for the whole suite. This is
  * the WAL-buffer model: the client owns the memory, hands pfsd a buffer id
  * once, and every zero-copy IO addresses a slice of it by (id, offset).
- * Registration must happen before mount, so it lives in SetUpTestSuite.
  */
 constexpr size_t kForeignBufSize = 256 * 1024;
 constexpr int kZcMountFlags = PFS_RDWR;  /* mount() adds PFS_TOOL */
@@ -77,11 +76,8 @@ int64_t g_buf_id = -1;
 
 class ZcTest : public testing::Test {
 public:
-	/* Register the foreign buffer once, before (re)mounting the suite. */
 	static void SetUpTestSuite()
 	{
-		ASSERT_EQ(0, g_testenv->umount()) << "umount before register";
-
 		g_memfd = memfd_create("pg-wal-buf", MFD_ALLOW_SEALING);
 		ASSERT_GE(g_memfd, 0) << strerror(errno);
 		ASSERT_EQ(0, ftruncate(g_memfd, kForeignBufSize)) << strerror(errno);
@@ -91,9 +87,6 @@ public:
 
 		g_buf_id = pfsd_register_shared_buffer(g_memfd, kForeignBufSize);
 		ASSERT_GE(g_buf_id, 0) << "register failed: " << strerror(errno);
-
-		ASSERT_EQ(0, g_testenv->mount(kZcMountFlags))
-		    << "remount after register";
 	}
 
 	/* Drop the buffer and restore the plain mount the shared env expects. */
@@ -435,9 +428,9 @@ register_runtime_buffer(size_t size, uint8_t **base_out, int *fd_out)
 }
 
 /*
- * The point of the feature: a buffer registered AFTER mount must serve
- * zero-copy IO just like a pre-mount one, and unregistering it must make the
- * daemon reject further IO against that id (EINVAL, not a crash).
+ * A buffer registered after mount must serve zero-copy IO, and unregistering
+ * it must make the daemon reject further IO against that id (EINVAL, not a
+ * crash).
  */
 TEST_F(ZcTest, RegisterAfterMountThenUnregister)
 {
@@ -508,4 +501,14 @@ TEST_F(ZcTest, ReRegisterAfterUnregister)
 	EXPECT_EQ(0, pfsd_unregister_shared_buffer(id2)) << strerror(errno);
 	munmap(base2, bufsz);
 	close(mfd2);
+}
+
+/*
+ * Registration requires a mounted SDK.
+ */
+TEST_F(ZcTest, RegisterBeforeMountRejected)
+{
+	ASSERT_EQ(0, g_testenv->umount());
+	EXPECT_EQ(-1, pfsd_register_shared_buffer(g_memfd, kForeignBufSize));
+	ASSERT_EQ(0, g_testenv->mount(kZcMountFlags));
 }
