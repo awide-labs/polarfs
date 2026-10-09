@@ -10,6 +10,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fixed a memory leak with zero-copy I/O: after each PolarDB crash restart
+  the previous copy of shared memory stayed allocated, which could exhaust
+  host memory (XCOM-189)
 - `pfsadm iostat` and `pfsadm namecachestat` displayed incorrect values:
   per-second rates are now rounded to the nearest integer; the "other"
   latency column now shows the TRIM+FLUSH latency; the queue depth is no

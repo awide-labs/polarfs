@@ -1904,33 +1904,6 @@ pfsd_alloc_shared_mem_pool(const char *name, size_t elem_size, size_t capacity,
 	return -1;
 }
 
-/*
- * Register a caller-owned, fd-backed shared buffer (e.g. a memfd_create or
- * shm_open region) with the SDK and obtain a buffer id. The returned id,
- * paired with an offset, can then be passed to pfsd_pread_zc/pfsd_pwrite_zc
- * so that pfsd performs device I/O straight out of the caller's buffer with
- * no intermediate copy into the PFS shared-memory pools.
- *
- * May be called before or after pfsd_mount. Buffers registered before mount
- * are shipped to pfsd in the batched REGISTER_BUFFERS handshake that mount
- * performs; a buffer registered after mount is shipped to pfsd immediately
- * (and the local mapping is rolled back if that send fails).
- *
- * Buffer lifetime:
- *   - The id survives pfsd_remount (the RO->RW upgrade): remount keeps the
- *     connection and buffer table intact, so registrations carry over.
- *   - The id does NOT survive a pfsd_umount/pfsd_mount cycle: umount tears
- *     down the connection and clears the buffer table, so the caller must
- *     re-register after the new mount. Ids are monotonic and not reused, so
- *     a fresh registration returns a new id; any id cached across umount is
- *     stale.
- *   - pfsd_unregister_shared_buffer drops the buffer explicitly at any time
- *     after mount.
- *
- * The SDK dups `memfd`; the caller retains ownership of its own descriptor
- * and may close it once this call returns. Returns the buffer id on success,
- * or -1 on failure.
- */
 int64_t
 pfsd_register_shared_buffer(int memfd, size_t size)
 {
@@ -1940,53 +1913,23 @@ pfsd_register_shared_buffer(int memfd, size_t size)
 		return -1;
 	}
 
-	/*
-	 * Post-mount we know the daemon's capabilities, so reject up front if it
-	 * lacks zero-copy support. Pre-mount the handshake has not happened yet;
-	 * such buffers are validated when they are shipped in sendBuffers(), and
-	 * any later zc IO is gated by pfsd_zc_supported() regardless.
-	 */
-	if (s_inited && !pfsd_zc_supported()) {
+	if (!s_inited || client == nullptr) {
+		PFSD_CLIENT_ELOG("register shared buffer before mount");
+		return -1;
+	}
+
+	if (!pfsd_zc_supported()) {
 		PFSD_CLIENT_ELOG("daemon has no zero-copy support");
 		return -1;
 	}
 
-	/*
-	 * Dup so ownership is unambiguous: the MemFd we build owns the dup for
-	 * the session lifetime, the caller keeps its original descriptor.
-	 */
-	int dupfd = dup(memfd);
-	if (dupfd < 0) {
-		PFSD_CLIENT_ELOG("dup shared buffer fd %d failed: %s", memfd,
-		    strerror(errno));
-		return -1;
-	}
-
-	if (client == nullptr) {
-		client = new ipc::Session;
-	}
-
 	try {
-		/* On mmap failure MemFd's ctor closes dupfd and throws. */
-		auto id = client->registerMemBuffer(
-		    std::make_unique<ipc::MemFd>(dupfd, size));
-		if (!id) {
-			PFSD_CLIENT_ELOG("register shared buffer failed");
+		uint64_t id = client->allocBufferId();
+		if (!client->sendBuffer(id, size, memfd)) {
+			PFSD_CLIENT_ELOG("send shared buffer %lu to pfsd failed", id);
 			return -1;
 		}
-
-		/*
-		 * Pre-mount buffers are shipped in a batch during mount; once
-		 * mounted we must push this one to the server immediately. On
-		 * failure roll back the local registration.
-		 */
-		if (s_inited && !client->sendBuffer(*id)) {
-			PFSD_CLIENT_ELOG("send shared buffer %lu to pfsd failed",
-			    *id);
-			client->removeRawBuffer(*id);
-			return -1;
-		}
-		return (int64_t)*id;
+		return id;
 	} catch (const std::exception &ex) {
 		PFSD_CLIENT_ELOG("register shared buffer failed: %s", ex.what());
 		return -1;

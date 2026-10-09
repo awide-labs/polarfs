@@ -167,35 +167,18 @@ public:
     return id;
   }
 
-  std::optional<uint64_t> registerMemBuffer(std::unique_ptr<MemFd> memfd) {
-    std::lock_guard lk(rwLock_);
-    return pools_.addRawBuffer(std::move(memfd));
-  }
-
-  /* Drop a locally-registered raw buffer. */
-  bool removeRawBuffer(uint64_t id) {
-    std::lock_guard lk(rwLock_);
-    return pools_.removeRawBuffer(id);
+  uint64_t allocBufferId() {
+    return pools_.allocId();
   }
 
   /*
-   * Ship a single, already locally-registered raw buffer to the server after
-   * mount. Used for post-mount pfsd_register_shared_buffer; pre-mount buffers
-   * are batched by sendBuffers() during start(). Returns false on error.
+   * Send REGISTER_BUFFERS for one buffer (id, size, fd) and wait for the
+   * server ack. Returns false on error.
    */
-  bool sendBuffer(uint64_t id) {
+  bool sendBuffer(uint64_t id, size_t size, int fd) {
     RegisterBuffersMessage message;
-    std::vector<int> toSend;
-    {
-      std::shared_lock lk(rwLock_);
-      auto desc = pools_.rawBufferDesc(id);
-      if (!desc) {
-        PFSD_CLIENT_ELOG("unknown buffer id %lu", id);
-        return false;
-      }
-      message.buffers.push_back(BufferDesc{desc->id, desc->size});
-      toSend.push_back(desc->fd);
-    }
+    message.buffers.push_back(BufferDesc{id, size});
+    std::vector<int> toSend{fd};
 
     std::lock_guard<std::mutex> ctl(ctrlMutex_);
     ackReceived_ = false;
@@ -210,32 +193,20 @@ public:
     return !error_;
   }
 
-  /*
-   * Unregister a raw buffer on the server, then drop the local mapping. The
-   * local fd is released only after the server acknowledges it stopped using
-   * its own copy, so no in-flight server I/O can touch a munmap'd region.
-   */
+  /* Send UNREGISTER_BUFFERS for `id` and wait for the server ack. */
   bool sendUnregisterBuffer(uint64_t id) {
     UnregisterBuffersMessage message;
     message.ids.push_back(id);
 
-    {
-      std::lock_guard<std::mutex> ctl(ctrlMutex_);
-      ackReceived_ = false;
-      evb_.runInLoopAndWait(
-          [this, &message] { socket_->write(message.serialize()); });
-      if (!waitEventMs([this] { return ackReceived_ || error_; }, timeoutMs_)) {
-        PFSD_CLIENT_ELOG("timed out waiting for server ack");
-        return false;
-      }
-      if (error_) {
-        return false;
-      }
+    std::lock_guard<std::mutex> ctl(ctrlMutex_);
+    ackReceived_ = false;
+    evb_.runInLoopAndWait(
+        [this, &message] { socket_->write(message.serialize()); });
+    if (!waitEventMs([this] { return ackReceived_ || error_; }, timeoutMs_)) {
+      PFSD_CLIENT_ELOG("timed out waiting for server ack");
+      return false;
     }
-
-    std::lock_guard lk(rwLock_);
-    pools_.removeRawBuffer(id);
-    return true;
+    return !error_;
   }
 
   void *getPtrFromSharedBuf(uint64_t bufId, off_t offset) {

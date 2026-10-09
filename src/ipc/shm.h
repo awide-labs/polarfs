@@ -1,7 +1,6 @@
 #pragma once
 
 #include "SharedIndexedMemPool.h"
-#include "memfd.h"
 #include "pfs_align.h"
 #include "pfsd_common.h"
 #include "proto.h"
@@ -14,7 +13,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -61,24 +59,8 @@ struct SharedMemoryPools {
     return id;
   }
 
-  uint64_t addRawBuffer(std::unique_ptr<MemFd> buf) {
-    auto id = nextId_.fetch_add(1, std::memory_order_relaxed);
-    rawBuffers_.push_back(std::move(buf));
-    rawBufferIds_.push_back(id);
-    return id;
-  }
-
-  /* Drop a previously registered raw buffer, releasing its MemFd (and the
-   * client's dup'd fd). Returns true if the id was found. */
-  bool removeRawBuffer(uint64_t id) {
-    for (size_t i = 0; i < rawBufferIds_.size(); i++) {
-      if (rawBufferIds_[i] == id) {
-        rawBuffers_.erase(rawBuffers_.begin() + i);
-        rawBufferIds_.erase(rawBufferIds_.begin() + i);
-        return true;
-      }
-    }
-    return false;
+  uint64_t allocId() {
+    return nextId_.fetch_add(1, std::memory_order_relaxed);
   }
 
   /*
@@ -184,11 +166,6 @@ struct SharedMemoryPools {
       rv.push_back(desc);
     }
 
-    for (size_t i = 0; i < rawBuffers_.size(); i++) {
-      Desc desc(rawBufferIds_[i], rawBuffers_[i]->size(), rawBuffers_[i]->fd());
-      rv.push_back(desc);
-    }
-
     Desc desc(requestsPoolId_, requestsPool_->memfd().size(),
               requestsPool_->fd());
     rv.push_back(desc);
@@ -196,23 +173,9 @@ struct SharedMemoryPools {
     return rv;
   }
 
-  /* Look up the wire descriptor (id, size, fd) of a registered raw buffer so a
-   * single buffer can be shipped to the server after mount. */
-  std::optional<Desc> rawBufferDesc(uint64_t id) {
-    for (size_t i = 0; i < rawBufferIds_.size(); i++) {
-      if (rawBufferIds_[i] == id) {
-        return Desc(rawBufferIds_[i], rawBuffers_[i]->size(),
-                    rawBuffers_[i]->fd());
-      }
-    }
-    return std::nullopt;
-  }
-
   void clear() {
     pools_.clear();
     poolIds_.clear();
-    rawBuffers_.clear();
-    rawBufferIds_.clear();
     poolIndexById_.clear();
     poolSizeIndices_.clear();
     nextId_ = 0;
@@ -298,8 +261,6 @@ private:
   uint64_t requestsPoolId_;
   std::vector<std::unique_ptr<SharedIndexedMemPool>> pools_;
   std::vector<uint64_t> poolIds_;
-  std::vector<std::unique_ptr<MemFd>> rawBuffers_;
-  std::vector<uint64_t> rawBufferIds_;
   std::unordered_map<uint64_t, int> poolIndexById_;
   std::vector<int> poolSizeIndices_;
   std::atomic<uint64_t> nextId_{};
