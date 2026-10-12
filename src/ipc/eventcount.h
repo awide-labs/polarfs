@@ -23,7 +23,7 @@
 #pragma once
 
 #include "pfs_portability.h"
-#include <asm/unistd_64.h>
+#include <sys/syscall.h>
 #include <atomic>
 #include <bit>
 #include <cassert>
