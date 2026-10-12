@@ -18,6 +18,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- PolarFS failed to build on arm64 (aarch64) because of an x86-64-only
+  header (XCOM-211)
+
 - Memory-statistics bookkeeping scaled poorly: due to an arithmetic quirk,
   all threads were landing on the same statistics slot, so on busy
   many-threaded instances every allocation and free contended on one shared
