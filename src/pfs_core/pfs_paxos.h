@@ -18,6 +18,9 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
+
+#include "pfs_impl.h"
 
 typedef struct pfs_mount 		pfs_mount_t;
 
@@ -53,6 +56,19 @@ typedef struct pfs_leader_record {
 	uint32_t checksum;
 } pfs_leader_record_t;
 
+/*
+ * The sector holding a leader record, which sits at its start.  Use it to
+ * read or write the record with device I/O, which moves whole sectors and,
+ * under O_DIRECT, wants sector-aligned buffers.
+ */
+typedef union alignas(PBD_SECTOR_SIZE) pfs_leader_sector {
+	pfs_leader_record_t	ls_lr;
+	char			ls_buf[PBD_SECTOR_SIZE];
+} pfs_leader_sector_t;
+
+static_assert(sizeof(pfs_leader_sector_t) == PBD_SECTOR_SIZE,
+    "pfs_leader_sector_t must be exactly one sector");
+
 /* LR size only relating to paxos */
 #define	LR_PAXOS_SIZE		offsetof(pfs_leader_record, tail_txid)
 #define	LEADER_CHECKSUM_LEN	offsetof(pfs_leader_record, checksum)
@@ -84,6 +100,7 @@ int 	pfs_leader_read(pfs_mount_t *mnt, pfs_leader_record_t *leader_ret);
 
 int	paxos_hostid_local_lock(const char *pbdname, int hostid, const char *caller);
 void	paxos_hostid_local_unlock(int fd);
+int	paxos_leader_reset(int devi, const char *pbdname);
 
 int read_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr,
 		uint32_t *checksum);
@@ -119,8 +136,8 @@ static_assert(sizeof(pfs_host_record_t) == 512,
     "pfs_host_record_t must be exactly 512 bytes");
 
 int64_t	pfs_paxos_lease_duration(void);
+int64_t	pfs_paxos_clock_skew_max(void);
 int	pfs_rw_lease_prepare(pfs_mount_t *mnt);
-int	pfs_rw_lease_verify_prepare(pfs_mount_t *mnt);
 int	pfs_rw_lease_acquire(pfs_mount_t *mnt);
 int	pfs_rw_lease_write_foreign(pfs_mount_t *mnt, uint32_t foreign_hostid);
 int	pfs_rw_lease_write_foreign_prepare(pfs_mount_t *mnt,
@@ -132,8 +149,39 @@ int	pfs_host_record_read(pfs_mount_t *mnt, uint32_t host_id,
 int	pfs_check_host_sector(pfs_mount_t *mnt, uint32_t host_id);
 int	pfs_rw_lease_renew(pfs_mount_t *mnt);
 void	pfs_rw_lease_release(pfs_mount_t *mnt);
-void	paxos_watchdog_open(pfs_mount_t *mnt);
+int	paxos_watchdog_open(pfs_mount_t *mnt);
 void	paxos_watchdog_pet(pfs_mount_t *mnt);
 void	paxos_watchdog_close(pfs_mount_t *mnt);
+
+#ifdef PFS_TEST
+/*
+ * libpfs_test only: if set, pfs_leader_load calls it after the
+ * live-holder check and before the prepare phase.
+ */
+extern void (*pfs_rw_lease_test_before_prepare)(pfs_mount_t *mnt);
+/* libpfs_test only: if set, called after verify_prepare, before acquire. */
+extern void (*pfs_rw_lease_test_before_acquire)(pfs_mount_t *mnt);
+/*
+ * libpfs_test only: if set, called by pfs_host_record_read with the sector
+ * just read; may modify it, or return a negative errno to fail the read.
+ */
+extern int (*pfs_rw_lease_test_read_hook)(pfs_mount_t *mnt, uint32_t host_id,
+    void *sector);
+/*
+ * libpfs_test only: if set, may adjust each reading of the clock a host uses
+ * for its own lease deadlines (clock says which one), e.g. to emulate time
+ * that clock did not count.
+ */
+extern void (*pfs_rw_lease_test_clock_hook)(clockid_t clock,
+    struct timespec *ts);
+/* libpfs_test only: seconds added to the timestamps we write (fake skew). */
+extern int64_t pfs_rw_lease_test_clock_offset;
+/*
+ * libpfs_test only: if set, called before the lease kill timer is created
+ * (create = true) and before each time it is armed (create = false); a
+ * negative errno fails that call instead.
+ */
+extern int (*pfs_rw_lease_test_kill_timer_hook)(bool create);
+#endif
 
 #endif

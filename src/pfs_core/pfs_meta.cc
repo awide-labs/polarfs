@@ -1119,12 +1119,13 @@ pfs_meta_load_all_chunks(pfs_mount_t *mnt)
 {
 	int err;
 	uint32_t i, oldnchunk, nchunk;
-	char buf[PBD_SECTOR_SIZE];
-	pfs_chunk_phy_t *phyck = (pfs_chunk_phy_t *)buf;
+	pfs_chunk_sector_t cks;
+	pfs_chunk_phy_t *phyck = &cks.cs_ck;
 	pfs_chunk_t **newchunkv;
 
 	/* read first chunk */
-	err = pfsdev_pread(mnt->mnt_ioch_desc, buf, PBD_SECTOR_SIZE, 0);
+	err = pfsdev_pread(mnt->mnt_ioch_desc, cks.cs_buf, sizeof(cks.cs_buf),
+	    0);
 	if (err < 0) {
 		pfs_etrace("Get first chunk header failed, err=%d\n", err);
 		return err;

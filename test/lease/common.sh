@@ -15,6 +15,7 @@ TEST_LOOP_DEVICE_NAME="${TEST_LOOP_DEVICE_NAME:-loop100}"
 TEST_IMAGE_SIZE_GB="${TEST_IMAGE_SIZE_GB:-10}"
 LEASE_TEST_SECTOR_SIZE="${LEASE_TEST_SECTOR_SIZE:-4096}"
 LEASE_TEST_DURATION="${LEASE_TEST_DURATION:-5}"  # seconds (short for CI)
+LEASE_TEST_CLOCK_SKEW="${LEASE_TEST_CLOCK_SKEW:-1}"  # paxos_clock_skew_max, seconds
 LEASE_TEST_CLUSTER="${LEASE_TEST_CLUSTER:-disk}"
 LEASE_TEST_TRACE_PLEVEL="${LEASE_TEST_TRACE_PLEVEL:-3}"  # 3=info, 4=debug
 
@@ -117,23 +118,134 @@ assert_log_contains() {
     fi
 }
 
+# errno values pfs_lease_hold reports as MOUNT_FAILED:<errno>.
+ENOMEM=12
+EBUSY=16
+EINVAL=22
+
+# Current size of $PFS_LOG: pass it to refusal_problem as <log_offset> to
+# look only at what is logged from now on.
+log_offset() {
+    stat -c %s "$PFS_LOG" 2>/dev/null || echo 0
+}
+
+# refusal_problem <pid> <rv> <out> <log_offset> <errno> <pattern>...
+#
+# Checks that pfs_lease_hold process <pid>, which exited with status <rv>
+# and wrote its stdout to <out>, had its mount refused the intended way: it
+# exited normally with status 2 after printing MOUNT_FAILED:<errno>, and
+# the lines its main (mounting) thread logged after byte <log_offset> of
+# $PFS_LOG match every extended regex <pattern>.  A crash, a hang or an
+# unrelated error does not qualify.  Prints what is wrong, or nothing.
+refusal_problem() {
+    local pid="$1" rv="$2" out="$3" offset="$4" errno="$5"
+    shift 5
+    local got lines pat
+
+    if [[ "$rv" -ne 2 ]]; then
+        echo "exited with status $rv, expected 2 (mount failed)"
+        return
+    fi
+    got=$(sed -n 's/^MOUNT_FAILED://p' "$out" 2>/dev/null)
+    if [[ "$got" != "$errno" ]]; then
+        echo "mount failed with errno ${got:-<none>}, expected $errno"
+        return
+    fi
+    # Log lines carry the writing thread's id; the main thread's is the pid.
+    lines=$(tail -c +"$((offset + 1))" "$PFS_LOG" 2>/dev/null |
+        grep -F "[$pid] ") || true
+    for pat in "$@"; do
+        if ! grep -qE -- "$pat" <<<"$lines"; then
+            echo "it did not log /$pat/"
+            return
+        fi
+    done
+}
+
+# expect_mount_refused <tc> <hostid> <what> <errno> <pattern>... -- <mode> [args…]
+#
+# Runs pfs_lease_hold <hostid> <mode> [args…], which must mount RW, and
+# expects the mount to be refused as refusal_problem checks.  <what>
+# describes the condition for the messages.  Waits up to REFUSE_BUDGET
+# seconds (default: start_rw_holder's budget).
+expect_mount_refused() {
+    local tc="$1" hostid="$2" what="$3" errno="$4"
+    shift 4
+    local patterns=()
+    while [[ "$1" != "--" ]]; do
+        patterns+=("$1")
+        shift
+    done
+    shift
+    local out pid rv="" offset problem
+    out=$(mktemp)
+    offset=$(log_offset)
+
+    lease_hold "$hostid" "$@" >"$out" &
+    pid=$!
+
+    local deadline=$((SECONDS + ${REFUSE_BUDGET:-$((LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 21))}))
+    while [[ $SECONDS -lt $deadline ]]; do
+        grep -q "^MOUNTED$" "$out" 2>/dev/null && break
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rv=0
+            wait "$pid" 2>/dev/null || rv=$?
+            break
+        fi
+        sleep 0.2
+    done
+
+    if grep -q "^MOUNTED$" "$out" 2>/dev/null; then
+        fail "$tc: H${hostid} mounted RW although $what"
+    elif [[ -z "$rv" ]]; then
+        fail "$tc: H${hostid} neither mounted nor exited while $what"
+    else
+        problem=$(refusal_problem "$pid" "$rv" "$out" "$offset" "$errno" \
+            "${patterns[@]}")
+        if [[ -n "$problem" ]]; then
+            fail "$tc: H${hostid} did not mount while $what, but $problem"
+        else
+            pass "$tc: H${hostid} refused (errno $errno) while $what"
+        fi
+    fi
+
+    # Unmount a host that did mount; kill one that ignores SIGTERM.
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null || true
+        local stop_deadline=$((SECONDS + 10))
+        while kill -0 "$pid" 2>/dev/null && [[ $SECONDS -lt $stop_deadline ]]; do
+            sleep 0.2
+        done
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    rm -f "$out"
+}
+
 # Mount RW and keep mount open (via pfs_lease_hold).
+# Usage: start_rw_holder <hostid> [mode [args…]]  (mode defaults to rw; any
+# pfs_lease_hold mode that prints "MOUNTED" works, e.g. rw-clock-offset 3).
 # Sets HOLDER_PID.  Waits for "MOUNTED" from the helper before returning.
 # Returns non-zero if mount fails.
 start_rw_holder() {
     local hostid="$1"
+    shift
+    local mode=("$@")
+    [[ ${#mode[@]} -eq 0 ]] && mode=(rw)
     local tmpout
     tmpout=$(mktemp)
 
-    lease_hold "$hostid" rw >"$tmpout" &
+    lease_hold "$hostid" "${mode[@]}" >"$tmpout" &
     HOLDER_PID=$!
 
     # Wait for "MOUNTED" (or process death meaning failure).
     # Budget: pfs_meta_load_all_chunks (≤8s under CI load) +
     # pfs_rw_lease_wait_and_check in crash-recovery scenario
-    # (≤LEASE_TEST_DURATION) + ballot prepare/verify/acquire (≤2s) +
-    # log start/replay/poll (≤5s) + scheduling jitter (5s).
-    local deadline=$((SECONDS + LEASE_TEST_DURATION + 20))
+    # (≤LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 1) + ballot
+    # prepare/verify/acquire (≤2s) + log start/replay/poll (≤5s) +
+    # scheduling jitter (5s), plus HOLDER_EXTRA_BUDGET for callers whose
+    # mode deliberately slows the mount down.
+    local deadline=$((SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 21 + ${HOLDER_EXTRA_BUDGET:-0}))
     while [[ $SECONDS -lt $deadline ]]; do
         if grep -q "^MOUNTED$" "$tmpout" 2>/dev/null; then
             rm -f "$tmpout"
@@ -244,11 +356,12 @@ trigger_promote() {
 
     kill -USR1 "$pid" 2>/dev/null || return 1
 
-    # Budget: pfs_log_suspend (≤3s) + wait_and_check (≤LEASE_TEST_DURATION) +
+    # Budget: pfs_log_suspend (≤3s) +
+    # wait_and_check (≤LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 1) +
     # ballot prepare/verify/acquire (≤1s) + pfs_mount_sync/orphans_reclaim/
     # admin_init (≤15s under CI load with accumulated journal entries) +
     # polling jitter (3s).
-    local deadline=$(( SECONDS + LEASE_TEST_DURATION + 25 ))
+    local deadline=$(( SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 26 ))
     while [[ $SECONDS -lt $deadline ]]; do
         if grep -q "^MOUNTED_RW$" "$tmpout" 2>/dev/null; then
             rm -f "$tmpout"; PROMOTE_TMPOUT=""
@@ -461,7 +574,8 @@ start_watchdog_stall_holder() {
 
 # Send SIGUSR1 to the watchdog-stall holder (suspends log, stops petting).
 # Then wait for the process to die (killed by watchdog timer).
-# Returns 0 if the process was killed by signal (exit >= 128).
+# Returns 0 if the process was killed by SIGKILL (exit 137), as the
+# watchdog's signal handler does.
 # Timeout: 2 × paxos_lease_duration + buffer.
 trigger_watchdog_stall() {
     local pid="${1:-${HOLDER_PID:-}}"
@@ -487,8 +601,7 @@ trigger_watchdog_stall() {
             wait "$pid" 2>/dev/null || exit_code=$?
             rm -f "$tmpout"; WATCHDOG_STALL_TMPOUT=""
             HOLDER_PID=""
-            # Killed by signal → exit code >= 128 (137 for SIGKILL)
-            if [[ $exit_code -ge 128 ]]; then
+            if [[ $exit_code -eq 137 ]]; then
                 return 0
             fi
             return 1
@@ -502,6 +615,100 @@ trigger_watchdog_stall() {
     rm -f "$tmpout"; WATCHDOG_STALL_TMPOUT=""
     HOLDER_PID=""
     return 1
+}
+
+# Rounds a concurrent acquisition race may take to produce a winner.
+RACE_ROUNDS="${RACE_ROUNDS:-5}"
+
+# race_rw_mounts <tc> <hostid>...
+#
+# Starts RW mounts of all <hostid>s at once and waits until each has mounted
+# or given up.  More than one mounted is split-brain.  A host that gave up
+# must have had its mount refused with EBUSY (see refusal_problem): a crash
+# or another error is not a lost race.  None mounted is a valid outcome of
+# a round: concurrent acquirers can all yield, each seeing another's
+# PREPARE or RW record.  The race is then rerun, with starts
+# staggered randomly, up to RACE_ROUNDS times; some round must have a
+# winner.
+race_rw_mounts() {
+    local tc="$1"
+    shift
+    local hosts=("$@")
+    local round i
+
+    for ((round = 1; round <= RACE_ROUNDS; round++)); do
+        local pids=() outs=() winners=() pending=0
+
+        for i in "${!hosts[@]}"; do
+            [[ $round -gt 1 ]] && sleep "0.$((RANDOM % 10))"
+            outs[i]=$(mktemp)
+            lease_hold "${hosts[i]}" rw >"${outs[i]}" &
+            pids[i]=$!
+        done
+
+        # Same budget as start_rw_holder.
+        local deadline=$((SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 21))
+        while :; do
+            winners=(); pending=0
+            for i in "${!hosts[@]}"; do
+                if grep -q "^MOUNTED$" "${outs[i]}" 2>/dev/null; then
+                    winners+=("${hosts[i]}")
+                elif kill -0 "${pids[i]}" 2>/dev/null; then
+                    pending=$((pending + 1))
+                fi
+            done
+            [[ $pending -eq 0 || $SECONDS -ge $deadline ]] && break
+            sleep 0.2
+        done
+
+        local refusals=() rv problem
+        for i in "${!hosts[@]}"; do
+            if grep -q "^MOUNTED$" "${outs[i]}" 2>/dev/null ||
+                kill -0 "${pids[i]}" 2>/dev/null; then
+                continue
+            fi
+            rv=0
+            wait "${pids[i]}" 2>/dev/null || rv=$?
+            problem=$(refusal_problem "${pids[i]}" "$rv" "${outs[i]}" 0 "$EBUSY")
+            if [[ -n "$problem" ]]; then
+                refusals+=("H${hosts[i]} $problem")
+            fi
+        done
+
+        # Unmount winners cleanly; kill anything still in flight.
+        for i in "${!hosts[@]}"; do
+            if grep -q "^MOUNTED$" "${outs[i]}" 2>/dev/null; then
+                kill -TERM "${pids[i]}" 2>/dev/null || true
+            else
+                kill -KILL "${pids[i]}" 2>/dev/null || true
+            fi
+            wait "${pids[i]}" 2>/dev/null || true
+            rm -f "${outs[i]}"
+        done
+
+        if [[ ${#winners[@]} -gt 1 ]]; then
+            fail "$tc: split-brain — ${#winners[@]} hosts mounted RW simultaneously (hosts ${winners[*]})"
+            return
+        fi
+        if [[ $pending -gt 0 ]]; then
+            fail "$tc: $pending host(s) neither mounted nor gave up in round $round"
+            return
+        fi
+        if [[ ${#refusals[@]} -gt 0 ]]; then
+            problem="${refusals[0]}"
+            for i in "${refusals[@]:1}"; do
+                problem+="; $i"
+            done
+            fail "$tc: round $round: $problem"
+            return
+        fi
+        if [[ ${#winners[@]} -eq 1 ]]; then
+            pass "$tc: host ${winners[0]} won round $round of the ${#hosts[@]}-host race, no split-brain"
+            return
+        fi
+        echo "  $tc: round $round: every host yielded, retrying"
+    done
+    fail "$tc: no host won in $RACE_ROUNDS rounds"
 }
 
 # Try a single-shot RW mount (touch /pbdname/probe_file), return exit code.
@@ -589,6 +796,7 @@ lease_test_setup() {
     cat >"$LEASE_TEST_CONF" <<EOF
 [pfs]
 paxos_lease_duration=${LEASE_TEST_DURATION}
+paxos_clock_skew_max=${LEASE_TEST_CLOCK_SKEW}
 trace_plevel=${LEASE_TEST_TRACE_PLEVEL}
 EOF
 
@@ -617,7 +825,7 @@ EOF
     "$PFS" -C "$LEASE_TEST_CLUSTER" mkfs \
         -f -s "$LEASE_TEST_SECTOR_SIZE" -u 254 "$TEST_LOOP_DEVICE_NAME"
 
-    echo "=== setup complete (loop=$TEST_LOOP_DEVICE, duration=${LEASE_TEST_DURATION}s) ==="
+    echo "=== setup complete (loop=$TEST_LOOP_DEVICE, duration=${LEASE_TEST_DURATION}s, skew=${LEASE_TEST_CLOCK_SKEW}s) ==="
 }
 
 lease_test_teardown() {

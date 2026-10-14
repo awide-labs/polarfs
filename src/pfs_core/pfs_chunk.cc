@@ -144,20 +144,19 @@ chunk_enablecrc(const pfs_chunkstream_desc_t *desc)
 }
 
 static int
-paxos_leader_read(int iodesc, char *buf, size_t buflen)
+paxos_leader_read(int iodesc, pfs_leader_sector_t *ls)
 {
 	int err;
-	pfs_leader_record_t *lr;
+	pfs_leader_record_t *lr = &ls->ls_lr;
 
-	PFS_ASSERT(buflen == PBD_SECTOR_SIZE);
-	memset(buf, 0, buflen);
-	err = pfsdev_pread(iodesc, buf, buflen, PFS_BLOCK_SIZE);
+	memset(ls, 0, sizeof(*ls));
+	err = pfsdev_pread(iodesc, ls->ls_buf, sizeof(ls->ls_buf),
+	    PFS_BLOCK_SIZE);
 	if (err < 0) {
 		pfs_etrace("failed to read paxos leader: %d\n", err);
 		return err;
 	}
 
-	lr = (pfs_leader_record_t *)buf;
 	if (lr->checksum != leader_checksum(lr)) {
 		pfs_etrace("paxos leader checksum %u is invalid\n",
 		    lr->checksum);
@@ -167,25 +166,80 @@ paxos_leader_read(int iodesc, char *buf, size_t buflen)
 }
 
 static int
-paxos_leader_write(int devi, char *buf, size_t buflen)
+paxos_leader_write(int devi, pfs_leader_sector_t *ls)
 {
 	int err;
 
-	PFS_ASSERT(buflen == PBD_SECTOR_SIZE);
-	err = pfsdev_pwrite(devi, buf, buflen, PFS_BLOCK_SIZE);
+	err = pfsdev_pwrite(devi, ls->ls_buf, sizeof(ls->ls_buf),
+	    PFS_BLOCK_SIZE);
 	if (err < 0) {
-		pfs_etrace("failed to write paxos leader: %d\n");
+		pfs_etrace("failed to write paxos leader: %d\n", err);
 		return err;
 	}
 
 	return 0;
 }
 
-static int
+/*
+ * Prepare the paxos file of a pbd whose blocks were just copied or restored
+ * from another pbd for its first mount.
+ *
+ * The copy brings along the source's per-host lease records (sectors
+ * 1..max_hosts).  They describe hosts of the source, not of this pbd: a
+ * recent RW or PREPARE record, or one torn by copying it while its host
+ * rewrote it, would make the first RW mount here wait out a lease nobody
+ * holds on this pbd, and every record would pass its lease generation on
+ * to this pbd.  Clear them all.  The leader record itself is kept, since
+ * its log pointers describe the copied journal.
+ *
+ * No host may have this pbd mounted, as its lease record is cleared too.
+ */
+int
 paxos_leader_reset(int devi, const char *pbdname)
 {
+	int err;
+	uint64_t i, max_hosts;
+	pfs_leader_sector_t ls;
+	pfs_leader_record_t *lr = &ls.ls_lr;
+
+	/*
+	 * A valid leader record also tells us the paxos file is where we
+	 * are about to write.
+	 */
+	err = paxos_leader_read(devi, &ls);
+	if (err < 0) {
+		pfs_etrace("pbd %s: cant read paxos leader, err=%d\n",
+		    pbdname, err);
+		return err;
+	}
+
+	if (lr->magic != PFS_LEADER_MAGIC ||
+	    lr->sector_size != PBD_SECTOR_SIZE ||
+	    lr->max_hosts == 0 || lr->max_hosts > DEFAULT_MAX_HOSTS) {
+		pfs_etrace("pbd %s: unexpected paxos leader: magic=%#x, "
+		    "sector_size=%u, max_hosts=%llu\n", pbdname, lr->magic,
+		    lr->sector_size, (unsigned long long)lr->max_hosts);
+		ERR_RETVAL(EINVAL);
+	}
+	max_hosts = lr->max_hosts;
+
+	/* An all-zero sector is an empty host record. */
+	memset(&ls, 0, sizeof(ls));
+	for (i = 1; i <= max_hosts; i++) {
+		err = pfsdev_pwrite(devi, ls.ls_buf, sizeof(ls.ls_buf),
+		    PFS_BLOCK_SIZE + i * PBD_SECTOR_SIZE);
+		if (err < 0) {
+			pfs_etrace("pbd %s: failed to clear paxos host record "
+			    "%llu: %d\n", pbdname, (unsigned long long)i, err);
+			return err;
+		}
+	}
+
+	pfs_itrace("pbd %s: cleared %llu paxos host records\n", pbdname,
+	    (unsigned long long)max_hosts);
 	return 0;
 }
+
 static int
 metacache_open(const char *pbdname, int mode)
 {
@@ -216,8 +270,8 @@ metacache_check_leader(int fd, int iochd)
 {
 	int err;
 	ssize_t rlen;
-	char buf[PBD_SECTOR_SIZE];
-	pfs_leader_record_t flr, *lr;
+	pfs_leader_sector_t ls;
+	pfs_leader_record_t flr;
 
 	/* read paxos leader from metacache */
 	rlen = pread(fd, &flr, sizeof(flr), sizeof(metacache_header_t));
@@ -233,11 +287,10 @@ metacache_check_leader(int fd, int iochd)
 	}
 
 	/* check paxos leader */
-	err = paxos_leader_read(iochd, buf, sizeof(buf));
+	err = paxos_leader_read(iochd, &ls);
 	if (err < 0)
 		ERR_RETVAL(EIO);
-	lr = (pfs_leader_record_t *)buf;
-	if (memcmp(lr, &flr, sizeof(*lr))) {
+	if (memcmp(&ls.ls_lr, &flr, sizeof(flr))) {
 		pfs_itrace("paxos leaders on pbd and metafile are different\n");
 		ERR_RETVAL(EINVAL);
 	}
@@ -313,9 +366,9 @@ metacache_check_bust(pfs_chunkstream_desc_t *desc)
 	struct stat st;
 	uint32_t fcrc, crc, ckid, fnck, mhsz;
 	ssize_t rlen, datasz, bustsz, offset;
-	pfs_chunk_phy_t *phyck;
+	pfs_chunk_sector_t cks;
+	pfs_chunk_phy_t *phyck = &cks.cs_ck;
 	block_usedinfo_t bust[PFS_NBT_PERCHUNK];
-	char sectbuf[PBD_SECTOR_SIZE];
 
 	fd = desc->csd_meta_fd;
 	iochd = desc->csd_ioch_desc;
@@ -380,13 +433,12 @@ metacache_check_bust(pfs_chunkstream_desc_t *desc)
 	 * compare valid chunk number in metacache with nchunk in
 	 * the first chunk header on pbd.
 	 */
-	memset(sectbuf, 0, sizeof(sectbuf));
-	err = pfsdev_pread(iochd, sectbuf, PBD_SECTOR_SIZE, 0);
+	memset(&cks, 0, sizeof(cks));
+	err = pfsdev_pread(iochd, cks.cs_buf, sizeof(cks.cs_buf), 0);
 	if (err < 0) {
 		pfs_etrace("cant read the first chunk header\n");
 		ERR_RETVAL(EIO);
 	}
-	phyck = (pfs_chunk_phy_t *)sectbuf;
 	if (!chunk_isvalid(phyck, 0))
 		ERR_RETVAL(EINVAL);
 
@@ -478,7 +530,7 @@ metacache_update(pfs_chunkstream_desc_t *desc)
 	pfs_mount_t *mnt;
 	ssize_t offset, wlen;
 	block_usedinfo_t but[PFS_NBT_PERCHUNK];
-	char sectbuf[PBD_SECTOR_SIZE];
+	pfs_leader_sector_t ls;
 	uint32_t butsz = sizeof(block_usedinfo_t) * PFS_NBT_PERCHUNK;
 	metacache_header_t mh;
 	uint32_t mhsz = sizeof(metacache_header_t);
@@ -528,11 +580,10 @@ metacache_update(pfs_chunkstream_desc_t *desc)
 	}
 
 	/* cache paxos leader */
-	memset(sectbuf, 0, PBD_SECTOR_SIZE);
-	err = paxos_leader_read(mnt->mnt_ioch_desc, sectbuf, sizeof(sectbuf));
+	err = paxos_leader_read(mnt->mnt_ioch_desc, &ls);
 	if (err < 0)
 		ERR_GOTO(EIO, out);
-	wlen = pwrite(fd, sectbuf, PBD_SECTOR_SIZE, mhsz);
+	wlen = pwrite(fd, ls.ls_buf, sizeof(ls.ls_buf), mhsz);
 	if (wlen != PBD_SECTOR_SIZE)
 		ERR_GOTO(EIO, out);
 

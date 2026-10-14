@@ -214,24 +214,53 @@ $sudo pfs -C disk dumple -t 2 -i 2048 nvme1n1
 $sudo pfs -C disk lease nvme1n1
 === RW Lease Status for nvme1n1 ===
 lease_duration: 30s
+clock_skew_max: 2s
 current_time:   1774095239 (2026-03-21 14:13:59)
 num_hosts:      30
 max_hosts:      254
 
 host 1    flags=RW          gen=3     ballot=91
           timestamp=1774095238 (2026-03-21 14:13:58)  age=1s
-          STATUS: ** ACTIVE RW HOLDER (expires in 29s) **
+          STATUS: ** ACTIVE RW HOLDER (expires in 32s) **
 ```
 
 - Output fields:
    - `lease_duration`: the configured lease duration in seconds (from `paxos_lease_duration`).
+   - `clock_skew_max`: the maximum assumed difference between hosts' clocks in seconds (from `paxos_clock_skew_max`, default 2). Other hosts treat a lease record as live until it is `lease_duration + clock_skew_max + 1` seconds old by their own clock.
    - `flags`: `RW` indicates the host holds or held an RW lease; `PREPARE` indicates the host is in the ballot prepare phase.
    - `gen`: mount generation counter (increments on crash, resets on clean unmount).
    - `ballot`: Paxos ballot number used for arbitration.
    - `timestamp`: epoch seconds of the last lease renewal (`CLOCK_REALTIME`).
    - `age`: seconds since the last renewal.
-   - `STATUS`: `ACTIVE RW HOLDER` with expiry countdown if the lease is live, `expired` with age if stale, or `prepare phase` if in ballot negotiation.
+   - `STATUS`: `ACTIVE RW HOLDER` with expiry countdown (to `lease_duration + clock_skew_max + 1` seconds of age) if the lease is live, `expired` with age if stale, or `prepare phase` if in ballot negotiation.
    - Empty host sectors (never used or cleanly released) are omitted.
+
+### RW lease deployment requirements
+
+All hosts accessing the same disk must meet these requirements:
+
+- Assign a unique host ID to each host.
+- Use the same `paxos_lease_duration` on every host, including PFS tools.
+  Do not change it while any host holds or is acquiring an RW lease.
+- Keep the difference between hosts' wall clocks within the
+  `paxos_clock_skew_max` configured on every host.
+- Synchronize clocks before starting PFS. Configure time synchronization and
+  VM clock management to avoid stepping `CLOCK_REALTIME` forward or backward
+  while any host holds or is acquiring an RW lease. This also applies to
+  manual clock changes. Keeping hosts synchronized with each other is not
+  sufficient if their clocks step together.
+
+Lease records use wall-clock timestamps, while the holder's watchdog uses
+elapsed time (`CLOCK_BOOTTIME`). A forward wall-clock step can make another
+host consider a lease expired before its holder's watchdog fires, even when
+both hosts have identical clocks and lease durations.
+
+Before a planned clock step or lease-duration change, prevent new RW lease
+acquisitions and cleanly release all RW leases on the affected disk. Resume
+RW mounts only after clocks and configuration meet the requirements above.
+These requirements are maintained by the operator; the lease protocol does
+not enforce them across hosts. Violating them can allow simultaneous RW
+writers and corrupt the filesystem.
 
 # 2. File&Directory-Related Commands
 
