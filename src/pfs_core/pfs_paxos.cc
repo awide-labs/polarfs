@@ -314,7 +314,7 @@ verify_leader(pfs_mount_t *mnt, struct pfs_leader_record *lr, uint32_t checksum)
 
 	if (lr->magic != PFS_LEADER_MAGIC) {
 		pfs_etrace("verify_leader wrong magic %x", lr->magic);
-		result = PFS_LEADER_MAGIC;
+		result = PFS_LEADER_EMAGIC;
 		goto fail;
 	}
 
