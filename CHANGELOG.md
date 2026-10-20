@@ -8,6 +8,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-20
+
 ### Added
 
 - Client libraries now dump a per-category memory-usage table to the log on
@@ -265,7 +267,8 @@ released by Alibaba (commit d0c5dc6):
 - Remove pfsdaemon options `-s` (worker sleep interval), `-b` (cpuset binding),
   and `-a` (shm directory), made obsolete by the new IPC implementation
 
-[unreleased]: https://github.com/awide-labs/polarfs/compare/v3.0.1..master
+[unreleased]: https://github.com/awide-labs/polarfs/compare/v3.1.0..master
+[3.1.0]: https://github.com/awide-labs/polarfs/compare/v3.0.1..v3.1.0
 [3.0.1]: https://github.com/awide-labs/polarfs/compare/v3.0.0..v3.0.1
 [3.0.0]: https://github.com/awide-labs/polarfs/compare/v2.2.0..v3.0.0
 [2.2.0]: https://github.com/awide-labs/polarfs/compare/v2.1.10..v2.2.0
