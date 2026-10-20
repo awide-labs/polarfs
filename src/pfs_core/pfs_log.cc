@@ -1692,9 +1692,11 @@ pfs_log_thread_entry(void *arg)
 		 * The renewal in the same iteration as the SUSPEND handler
 		 * (still SERVING) completes before the reply is sent.
 		 *
-		 * LOGST_STOP: mnt_rw_lease_held is false by the time STOP is
-		 * processed (pfs_leader_unload ran first), so the second
-		 * condition already guards it.
+		 * LOGST_STOP: the loop exits in the iteration that handles
+		 * STOP, so renewal never runs in that state.  A renewal
+		 * earlier in that iteration is harmless: unmount stops and
+		 * joins this thread (pfs_log_stop) before pfs_leader_unload
+		 * clears our sector, so the clear comes last.
 		 */
 		if (log->log_state != LOGST_SUSPENDED &&
 		    log->log_mount->mnt_rw_lease_held &&
@@ -1714,13 +1716,12 @@ pfs_log_thread_entry(void *arg)
 				    (long long)stale,
 				    (long long)pfs_paxos_lease_duration());
 				/*
-				 * Watchdog (if enabled) fires automatically
-				 * because we stopped petting it above.
-				 * Without a watchdog, self-fence by aborting
-				 * once the lease window has elapsed — at that
-				 * point another host is allowed to mount RW
-				 * and continuing to run risks split-brain
-				 * writes.
+				 * The kill timer fires on its own because we
+				 * stopped petting it above.  As a backstop,
+				 * also self-fence by aborting once the lease
+				 * window has elapsed — at that point another
+				 * host is allowed to mount RW and continuing
+				 * to run risks split-brain writes.
 				 */
 				if (stale >= pfs_paxos_lease_duration()) {
 					pfs_etrace("fatal: RW lease expired "

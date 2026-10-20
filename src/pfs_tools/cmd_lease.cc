@@ -71,7 +71,7 @@ cmd_lease(int argc, char *argv[], cmd_opts_t *co)
 	pfs_leader_record_t lr;
 	uint32_t checksum;
 	struct timespec now;
-	int64_t lease_dur;
+	int64_t lease_dur, skew_max;
 
 	if (argc < 1)
 		return -1;
@@ -91,12 +91,14 @@ cmd_lease(int argc, char *argv[], cmd_opts_t *co)
 	}
 
 	lease_dur = pfs_paxos_lease_duration();
+	skew_max = pfs_paxos_clock_skew_max();
 	clock_gettime(CLOCK_REALTIME, &now);
 
 	char tbuf[FMT_TIME_BUFSZ];
 
 	printf("=== RW Lease Status for %s ===\n", pbdname);
 	printf("lease_duration: %llds\n", (long long)lease_dur);
+	printf("clock_skew_max: %llds\n", (long long)skew_max);
 	printf("current_time:   %lld (%s)\n", (long long)now.tv_sec,
 	    fmt_time(now.tv_sec, tbuf, sizeof(tbuf)));
 	printf("num_hosts:      %llu\n", (unsigned long long)lr.num_hosts);
@@ -124,7 +126,8 @@ cmd_lease(int argc, char *argv[], cmd_opts_t *co)
 		found_any = true;
 		char fbuf[FLAGS_BUFSZ];
 		int64_t age = now.tv_sec - (int64_t)hr.hr_timestamp;
-		int64_t expires_in = lease_dur - age;
+		/* same rule as host_record_live() in pfs_paxos.cc */
+		int64_t expires_in = lease_dur + skew_max + 1 - age;
 
 		printf("host %-3u  flags=%-11s gen=%-5u ballot=%-12llu\n"
 		    "          timestamp=%llu (%s)  age=%llds\n",
