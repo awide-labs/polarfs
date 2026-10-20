@@ -34,6 +34,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   source's read-write lease records. Its first read-write mount could then
   stall for about half a minute, waiting out a lease that no host holds on
   the copy. These copies now start with no lease records (XCOM-202)
+- Mounting a filesystem whose leader record has a wrong magic number
+  failed with an unknown error code. It now fails with the bad leader
+  magic error, and `pfs` commands report "bad leader magic" (XCOM-202)
 
 ## [3.1.0] - 2026-10-20
 
