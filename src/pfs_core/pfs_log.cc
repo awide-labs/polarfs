@@ -215,7 +215,7 @@ PFS_OPTION_REG(log_paxos_lease, pfs_check_ival_normal);
 
 /* look one logentry ahead of journal's head as skip-poll flag */
 static int64_t log_skip_journal_probe = 1;
-PFS_OPTION_REG(log_skip_journal_probe, pfs_check_ival_normal);
+PFS_OPTION_REG(log_skip_journal_probe, pfs_check_ival_switch);
 
 static int
 node_cmp(const void *fst, const void *snd)
