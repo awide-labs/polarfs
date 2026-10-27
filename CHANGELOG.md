@@ -59,6 +59,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Mounting a filesystem whose leader record has a wrong magic number
   failed with an unknown error code. It now fails with the bad leader
   magic error, and `pfs` commands report "bad leader magic" (XCOM-202)
+- The `paxos_watchdog_enable` and `log_skip_journal_probe` settings could
+  not be set to 0: the value was rejected as invalid, so
+  `paxos_watchdog_enable` could not be turned off again once enabled. Both
+  settings now accept exactly 0 and 1 (XCOM-202)
 - `pfs fscp -c` checksummed only the last 128 KB read of each 4 MB block
   (the last `-n` group of fragments), so corruption elsewhere in the block
   went undetected and the check reported a pass. The whole block is now

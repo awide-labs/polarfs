@@ -58,7 +58,7 @@ paxos_check_ival_nonneg(void *data)
 }
 
 PFS_OPTION_REG(paxos_lease_duration,       pfs_check_ival_normal);
-PFS_OPTION_REG(paxos_watchdog_enable,      pfs_check_ival_normal);
+PFS_OPTION_REG(paxos_watchdog_enable,      pfs_check_ival_switch);
 PFS_OPTION_REG(paxos_clock_skew_max,       paxos_check_ival_nonneg);
 
 #ifdef PFS_TEST
