@@ -11,6 +11,7 @@
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-slow-corrupt <target_hostid> <delay_ms> <eio_ms> [nochange]
  *   pfs_lease_hold <cluster> <pbdname> <hostid> rw-kill-timer-fail <create|arm|rearm>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> promote-kill-timer-fail <create|arm>
+ *   pfs_lease_hold <cluster> <pbdname> <hostid> promote-orphans-fail
  *   pfs_lease_hold <cluster> <pbdname> <rw_hostid> demote <ro_hostid>
  *   pfs_lease_hold <cluster> <pbdname> <writer_hostid> corrupt-sector <target_hostid> <badmagic|badchecksum>
  *   pfs_lease_hold <cluster> <pbdname> <hostid> self-corrupt-renew
@@ -62,11 +63,19 @@
  *             deadline out (rearm).  Used by Group N tests.
  *   promote — mount RO, print "MOUNTED_RO", block until SIGUSR1; then call
  *             pfs_remount() to promote to RW in-place.  On success prints
- *             "MOUNTED_RW"; on failure prints "REMOUNT_FAILED:<errno>".
- *             Then blocks until SIGTERM and unmounts.
+ *             "MOUNTED_RW"; on failure prints "REMOUNT_FAILED:<errno>",
+ *             checks the restored RO mount ("MOUNT_USABLE" or
+ *             "MOUNT_UNUSABLE:<errno>") and the refcounts ("REFCOUNT_OK"
+ *             or "REFCOUNT_BAD:..."), and checks the mount again on each
+ *             further SIGUSR1 ("RECHECK_USABLE" or
+ *             "RECHECK_UNUSABLE:<errno>").  Then blocks until SIGTERM and
+ *             unmounts.
  *   promote-kill-timer-fail — like promote, but setting up the lease kill
  *             timer fails when promoting: creating it (create) or arming
  *             it (arm).  Used by Group N tests.
+ *   promote-orphans-fail — like promote, but reclaiming orphans fails with
+ *             EIO after the promotion has acquired the lease.  Used by
+ *             Group G tests.
  *   self-corrupt-renew — mount RW as hostid, print "MOUNTED", wait for
  *             SIGUSR1; on SIGUSR1 corrupt own paxos sector (bad checksum),
  *             print "CORRUPTED", sleep 3s for the log thread renewal to
@@ -427,6 +436,7 @@ mode_promote(const char *cluster, const char *pbdname, int hostid)
 
 	if (!g_stop) {
 		/* Phase 2: promote RO→RW via pfs_remount */
+		g_promote = 0;
 		r = pfs_remount(cluster, pbdname, hostid, PFS_RDWR);
 		if (r == 0) {
 			printf("MOUNTED_RW\n");
@@ -474,6 +484,25 @@ mode_promote(const char *cluster, const char *pbdname, int hostid)
 				    pfsd_get_host_is_rwmnt(hostid));
 			}
 			fflush(stdout);
+
+			/*
+			 * Read through the restored mount again on each
+			 * SIGUSR1, e.g. after other hosts have changed the
+			 * filesystem: an RO mount that has stopped following
+			 * the journal exits here once it has been trimmed
+			 * past.
+			 */
+			while (!g_stop) {
+				sleep(1);
+				if (g_stop || !g_promote)
+					continue;
+				g_promote = 0;
+				if (pfs_stat(rootpath, &st) == 0)
+					printf("RECHECK_USABLE\n");
+				else
+					printf("RECHECK_UNUSABLE:%d\n", errno);
+				fflush(stdout);
+			}
 		}
 
 		/* Wait for SIGTERM regardless of promote outcome */
@@ -496,6 +525,20 @@ mode_promote_kill_timer_fail(const char *cluster, const char *pbdname,
 	}
 	g_kill_timer_fail = step;
 	pfs_rw_lease_test_kill_timer_hook = kill_timer_fail_hook;
+	return mode_promote(cluster, pbdname, hostid);
+}
+
+static int
+orphans_reclaim_fail_hook(pfs_mount_t *)
+{
+	return -EIO;
+}
+
+static int
+mode_promote_orphans_fail(const char *cluster, const char *pbdname,
+    int hostid)
+{
+	pfs_mount_test_orphans_reclaim_hook = orphans_reclaim_fail_hook;
 	return mode_promote(cluster, pbdname, hostid);
 }
 
@@ -1389,6 +1432,9 @@ main(int argc, char *argv[])
 
 	if (strcmp(mode, "promote") == 0)
 		return mode_promote(cluster, pbdname, hostid);
+
+	if (strcmp(mode, "promote-orphans-fail") == 0)
+		return mode_promote_orphans_fail(cluster, pbdname, hostid);
 
 	if (strcmp(mode, "promote-kill-timer-fail") == 0) {
 		if (argc < 6) {

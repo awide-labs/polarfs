@@ -75,6 +75,7 @@ static mountentry_t		mount_entry[PFS_MAX_NMOUNT];
 
 #ifdef PFS_TEST
 bool pfs_mount_test_skip_node_lock;
+int (*pfs_mount_test_orphans_reclaim_hook)(pfs_mount_t *mnt);
 #endif
 
 static bool
@@ -237,6 +238,7 @@ static void	pfs_bd_free(tnode_t *node);
 static void	pfs_bd_reset(tnode_t **bdrootp);
 
 static int	pfs_orphans_reclaim(pfs_mount_t *mnt);
+int		pfs_remount_ro(pfs_mount_t *mnt, int host_id);
 
 static int	pfs_mntstat_start(pfs_mount_t *mnt);
 static void	pfs_mntstat_stop(pfs_mount_t *mnt);
@@ -1291,6 +1293,13 @@ pfs_orphans_reclaim(pfs_mount_t *mnt)
 	int i = 0;
 	orphan_largefile_arg_t args;
 
+#ifdef PFS_TEST
+	if (pfs_mount_test_orphans_reclaim_hook) {
+		err1 = pfs_mount_test_orphans_reclaim_hook(mnt);
+		if (err1 < 0)
+			return err1;
+	}
+#endif
 	while (err == -EAGAIN) {
 		err = 0;
 		memset(&args, 0, sizeof(args));
@@ -2053,24 +2062,16 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 		}
 		pfs_log_resume(&mnt->mnt_log);
 		/*
-		 * The poll thread was stopped at the start of
-		 * pfs_remount_rw.  Do not restart it here — the mount
-		 * is being restored to RO only so the caller can
-		 * receive the error and then call
-		 * pfs_umount/pfs_mount_release cleanly.
-		 * pfs_poll_stop in pfs_umount is safe when poll_tid=0.
+		 * The restored mount goes on serving its other RO clients,
+		 * so restart the poll thread stopped above: without it an
+		 * idle mount stops following the journal and, once the RW
+		 * host trims past it, cannot catch up.
 		 */
+		if (pfs_poll_start(mnt) < 0)
+			exit(EIO);
 		pfs_notify_inited(mnt);
 		mountentry_wrunlock(me);
-
-		mnt = pfs_get_mount(pbdname);
-		if (mnt != NULL) {
-			mnt->mnt_admin = pfs_admin_init(pbdname);
-			pfs_put_mount(mnt);
-		}
-
-		errno = -err;
-		return err;
+		goto restored_ro;
 	}
 
 	pfs_log_resume(&mnt->mnt_log);
@@ -2110,9 +2111,28 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 
 	err = pfs_orphans_reclaim(mnt);
 	if (err < 0) {
-		errno = EIO;
-		pfs_etrace("remount cant reclaim orphans: err %d\n", err);
-		return err;
+		/*
+		 * The caller takes this as a failed promotion, so do not stay
+		 * RW: give the lease back and restore RO, as pfs_mount
+		 * unmounts on the same failure.
+		 */
+		pfs_etrace("remount cant reclaim orphans: err %d, restoring RO "
+		    "mount\n", err);
+		pfs_put_mount(mnt);
+
+		me = mountentry_find_iter(mountentry_hasname, pbdname,
+		    RW_WRLOCK);
+		if (me == NULL) {
+			/* Unmounted meanwhile, which gave the lease back. */
+			pfs_etrace("cannot find PBD %s\n", pbdname);
+			errno = -err;
+			return err;
+		}
+		mnt = me->me_mount;
+		pfs_remount_ro(mnt, saved_host_id);
+		mnt->mnt_flags = saved_flags;
+		mountentry_wrunlock(me);
+		goto restored_ro;
 	}
 
 	mnt->mnt_admin = pfs_admin_init(pbdname);
@@ -2123,6 +2143,17 @@ pfs_remount_rw(const char *pbdname, int host_id, int flags)
 	}
 	pfs_put_mount(mnt);
 	return 0;
+
+restored_ro:
+	/* The promotion failed with err and the mount is RO again. */
+	mnt = pfs_get_mount(pbdname);
+	if (mnt != NULL) {
+		mnt->mnt_admin = pfs_admin_init(pbdname);
+		pfs_put_mount(mnt);
+	}
+
+	errno = -err;
+	return err;
 }
 
 int

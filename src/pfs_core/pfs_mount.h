@@ -177,6 +177,11 @@ const char	*pfs_mount_strerror(int err);
  * emulating separate hosts on one machine do not collide on it.
  */
 extern bool pfs_mount_test_skip_node_lock;
+/*
+ * libpfs_test only: if set, called before pfs_orphans_reclaim reclaims
+ * anything; a negative errno fails the reclaim instead.
+ */
+extern int (*pfs_mount_test_orphans_reclaim_hook)(pfs_mount_t *mnt);
 #endif
 
 pfs_mount_t *	pfs_get_mount(const char *pbdname);
