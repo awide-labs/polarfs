@@ -168,50 +168,20 @@ expect_promote_refused() {
         shift
     done
     shift
-    local out pid offset deadline problem="" got
+    local out pid offset problem
 
-    out=$(mktemp)
-    lease_hold "$hostid" promote-kill-timer-fail "$1" >"$out" &
-    pid=$!
-
-    deadline=$((SECONDS + 10))
-    while [[ $SECONDS -lt $deadline ]] && kill -0 "$pid" 2>/dev/null &&
-        ! grep -q "^MOUNTED_RO$" "$out" 2>/dev/null; do
-        sleep 0.2
-    done
-    if ! grep -q "^MOUNTED_RO$" "$out" 2>/dev/null; then
+    if ! start_promote_holder "$hostid" promote-kill-timer-fail "$1"; then
         fail "$tc: H${hostid} could not mount RO"
-        stop_holder "$pid"
-        rm -f "$out"
         return
     fi
+    pid="$HOLDER_PID"
+    out="$PROMOTE_TMPOUT"
 
     offset=$(log_offset)
-    kill -USR1 "$pid"
-
-    # Budget as in trigger_promote; the promotion fails at its end.
-    deadline=$((SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 26))
-    while [[ $SECONDS -lt $deadline ]] && kill -0 "$pid" 2>/dev/null &&
-        ! grep -q "^REFCOUNT_\|^MOUNTED_RW$" "$out" 2>/dev/null; do
-        sleep 0.2
-    done
-
-    got=$(sed -n 's/^REMOUNT_FAILED://p' "$out" 2>/dev/null)
-    if grep -q "^MOUNTED_RW$" "$out" 2>/dev/null; then
-        problem="it promoted to RW"
-    elif ! kill -0 "$pid" 2>/dev/null; then
-        problem="the process exited"
-    elif [[ -z "$got" ]]; then
-        problem="it neither promoted nor failed"
-    elif [[ "$got" != "$errno" ]]; then
-        problem="promotion failed with errno $got, expected $errno"
-    elif ! grep -q "^MOUNT_USABLE$" "$out" 2>/dev/null; then
-        problem="its RO mount is unusable"
-    elif ! grep -q "^REFCOUNT_OK$" "$out" 2>/dev/null; then
-        problem="refcounts are wrong ($(grep "^REFCOUNT_" "$out" | head -1))"
-    else
-        problem=$(main_log_problem "$pid" "$offset" "${patterns[@]}")
-    fi
+    promote_and_wait "$pid" "$out"
+    problem=$(failed_promote_problem "$pid" "$out" "$errno")
+    [[ -z "$problem" ]] && problem=$(main_log_problem "$pid" "$offset" \
+        "${patterns[@]}")
 
     if [[ -n "$problem" ]]; then
         fail "$tc: H${hostid} promotion while $what: $problem"

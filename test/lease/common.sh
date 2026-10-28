@@ -119,6 +119,7 @@ assert_log_contains() {
 }
 
 # errno values pfs_lease_hold reports as MOUNT_FAILED:<errno>.
+EIO=5
 ENOMEM=12
 EBUSY=16
 EINVAL=22
@@ -327,14 +328,19 @@ start_ro_holder() {
 # Start a holder in "promote" mode: mounts RO, then waits for trigger_promote
 # to call pfs_remount() in-place.  Sets HOLDER_PID and PROMOTE_TMPOUT.
 # Waits for "MOUNTED_RO" before returning.  Returns non-zero on failure.
+# Usage: start_promote_holder <hostid> [mode [args…]]  (mode defaults to
+# promote; any pfs_lease_hold mode like promote works).
 PROMOTE_TMPOUT=""
 start_promote_holder() {
     local hostid="$1"
+    shift
+    local mode=("$@")
+    [[ ${#mode[@]} -eq 0 ]] && mode=(promote)
     local tmpout
     tmpout=$(mktemp)
     PROMOTE_TMPOUT="$tmpout"
 
-    lease_hold "$hostid" promote >"$tmpout" &
+    lease_hold "$hostid" "${mode[@]}" >"$tmpout" &
     HOLDER_PID=$!
 
     local deadline=$((SECONDS + 10))
@@ -398,6 +404,41 @@ trigger_promote() {
     wait "$pid" 2>/dev/null || true
     rm -f "$tmpout"; PROMOTE_TMPOUT=""
     return 1
+}
+
+# Send SIGUSR1 to promote holder <pid> and wait until it has promoted, or
+# has failed to and checked its restored RO mount, or has exited.  Unlike
+# trigger_promote it keeps <out>.  Budget as in trigger_promote.
+promote_and_wait() {
+    local pid="$1" out="$2"
+    local deadline=$((SECONDS + LEASE_TEST_DURATION + LEASE_TEST_CLOCK_SKEW + 26))
+
+    kill -USR1 "$pid" 2>/dev/null || return 0
+    while [[ $SECONDS -lt $deadline ]] && kill -0 "$pid" 2>/dev/null &&
+        ! grep -q "^REFCOUNT_\|^MOUNTED_RW$" "$out" 2>/dev/null; do
+        sleep 0.2
+    done
+}
+
+# What is wrong with the failed promotion of promote holder <pid>, expected
+# to fail with <errno>, or nothing.
+failed_promote_problem() {
+    local pid="$1" out="$2" errno="$3" got
+
+    got=$(sed -n 's/^REMOUNT_FAILED://p' "$out" 2>/dev/null)
+    if grep -q "^MOUNTED_RW$" "$out" 2>/dev/null; then
+        echo "it promoted to RW"
+    elif ! kill -0 "$pid" 2>/dev/null; then
+        echo "the process exited"
+    elif [[ -z "$got" ]]; then
+        echo "it neither promoted nor failed"
+    elif [[ "$got" != "$errno" ]]; then
+        echo "promotion failed with errno $got, expected $errno"
+    elif ! grep -q "^MOUNT_USABLE$" "$out" 2>/dev/null; then
+        echo "its RO mount is unusable"
+    elif ! grep -q "^REFCOUNT_OK$" "$out" 2>/dev/null; then
+        echo "refcounts are wrong ($(grep "^REFCOUNT_" "$out" | head -1))"
+    fi
 }
 
 # Start a holder in "demote" mode: mounts RW with rw_hostid, registers an

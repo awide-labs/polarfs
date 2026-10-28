@@ -63,6 +63,15 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   not be set to 0: the value was rejected as invalid, so
   `paxos_watchdog_enable` could not be turned off again once enabled. Both
   settings now accept exactly 0 and 1 (XCOM-202)
+- A failed promotion to read-write could leave `pfsd` in a broken state.
+  If the promotion failed while reclaiming orphaned files, the mount stayed
+  read-write with the lease held, and every other host's read-write mount
+  would then fail. If it failed earlier, for example with `EBUSY`, the
+  read-only mount kept for `pfsd`'s other clients stopped following the
+  journal while idle; once the read-write host trimmed the journal past it,
+  the next read terminated `pfsd` and every client on it. A failed
+  promotion now gives the lease back and restores a read-only mount that
+  keeps following the journal (XCOM-202)
 - `pfs fscp -c` checksummed only the last 128 KB read of each 4 MB block
   (the last `-n` group of fragments), so corruption elsewhere in the block
   went undetected and the check reported a pass. The whole block is now

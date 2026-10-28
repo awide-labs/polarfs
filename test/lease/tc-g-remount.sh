@@ -28,6 +28,15 @@
 #        EBUSY, the restored RO mount must still be functional (stat on root
 #        succeeds).  Regression test for missing pfs_notify_inited in the
 #        EBUSY recovery path.
+# TC-G9: Restored RO mount keeps following the journal — after a failed
+#        promote the mount sits idle while another host writes and trims
+#        the journal past it; a read afterwards must still succeed.
+#        Regression test for the poll thread not being restarted when the
+#        mount is restored to RO (the read would exit the process).
+# TC-G10: Failed orphan reclaim after the lease is acquired — the promotion
+#        fails with EIO, the lease is given back while the process lives on
+#        and the mount is RO and usable again, so another host can mount RW
+#        at once.
 
 source "$(dirname "$0")/common.sh"
 
@@ -544,6 +553,154 @@ else
             fail "TC-G8: timed out waiting for MOUNT_USABLE output"
         fi
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Helpers for TC-G9 and TC-G10, for a promote holder started with
+# start_promote_holder whose promotion has failed (see promote_and_wait).
+# ---------------------------------------------------------------------------
+
+# Ask promote holder <pid>, whose promotion has failed, to read through its
+# restored RO mount again, and wait for the answer or for it to exit.
+recheck_and_wait() {
+    local pid="$1" out="$2"
+    local deadline=$((SECONDS + 10))
+
+    kill -USR1 "$pid" 2>/dev/null || return 0
+    while [[ $SECONDS -lt $deadline ]] && kill -0 "$pid" 2>/dev/null &&
+        ! grep -q "^RECHECK_" "$out" 2>/dev/null; do
+        sleep 0.2
+    done
+}
+
+# What is wrong with the answer of promote holder <pid> to recheck_and_wait,
+# or nothing.
+recheck_problem() {
+    local pid="$1" out="$2"
+
+    if grep -q "^RECHECK_USABLE$" "$out" 2>/dev/null; then
+        return
+    elif grep -q "^RECHECK_UNUSABLE:" "$out" 2>/dev/null; then
+        echo "a read failed ($(grep "^RECHECK_UNUSABLE:" "$out" | head -1))"
+    elif ! kill -0 "$pid" 2>/dev/null; then
+        echo "the process exited on a read"
+    else
+        echo "it did not answer"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# TC-G9: Restored RO mount keeps following the journal
+#
+# H2's promotion fails with EBUSY against H1.  H1 then unmounts, and host 1
+# creates files and flushes the journal with pfs tool commands, which trims
+# it up to its head.  H2 reads nothing meanwhile: only its poll thread can
+# keep it following the journal.  The pause before the flush gives the poll
+# thread (poll_interval, 1s) time to replay the new entries; without the
+# thread the flush trims past H2, and H2's next read finds entries missing
+# and exits the process.
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-G9: restored RO mount keeps following the journal"
+
+HOLDER_PID=""
+H1_PID=""
+if start_rw_holder 1; then
+    H1_PID="$HOLDER_PID"
+    sleep 2   # ensure H1 is actively renewing
+fi
+if [[ -z "$H1_PID" ]]; then
+    fail "TC-G9: setup: could not start RW holder as host 1"
+elif ! start_promote_holder 2; then
+    stop_holder "$H1_PID"
+    fail "TC-G9: could not start promote holder for host 2"
+else
+    H2_PID="$HOLDER_PID"
+    H2_OUT="$PROMOTE_TMPOUT"
+
+    promote_and_wait "$H2_PID" "$H2_OUT"
+    problem=$(failed_promote_problem "$H2_PID" "$H2_OUT" "$EBUSY")
+    stop_holder "$H1_PID"
+
+    if [[ -z "$problem" ]]; then
+        for i in 1 2 3 4 5; do
+            if ! pfs_cmd 1 touch "/${TEST_LOOP_DEVICE_NAME}/g9_$i" \
+                2>/dev/null; then
+                problem="host 1 could not create a file"
+                break
+            fi
+        done
+    fi
+    if [[ -z "$problem" ]]; then
+        sleep 3
+        if ! timeout 60 "$PFS" -H 1 -C "$LEASE_TEST_CLUSTER" -E 0 \
+            flushlog "$TEST_LOOP_DEVICE_NAME" >/dev/null 2>&1; then
+            problem="host 1 could not flush the journal"
+        fi
+    fi
+    if [[ -z "$problem" ]]; then
+        sleep 2
+        recheck_and_wait "$H2_PID" "$H2_OUT"
+        problem=$(recheck_problem "$H2_PID" "$H2_OUT")
+    fi
+
+    if [[ -n "$problem" ]]; then
+        fail "TC-G9: H2 after failed promote and journal trim: $problem"
+    else
+        pass "TC-G9: restored RO mount followed the journal through a trim"
+    fi
+    stop_holder "$H2_PID"
+    rm -f "$H2_OUT"
+fi
+
+# ---------------------------------------------------------------------------
+# TC-G10: Failed orphan reclaim after the lease is acquired
+#
+# H2 promotes in mode promote-orphans-fail: it acquires the lease, then
+# reclaiming orphans fails with EIO.  The promotion must fail, and with H2
+# still alive its lease sector must be zeroed and host 3 must mount RW.
+# Before the fix H2 stayed RW, holding and renewing the lease, so host 3
+# failed with EBUSY.
+# ---------------------------------------------------------------------------
+echo ""
+echo "TC-G10: failed orphan reclaim gives the lease back"
+
+HOLDER_PID=""
+if ! start_promote_holder 2 promote-orphans-fail; then
+    fail "TC-G10: H2 could not mount RO"
+else
+    H2_PID="$HOLDER_PID"
+    H2_OUT="$PROMOTE_TMPOUT"
+    offset=$(log_offset)
+    promote_and_wait "$H2_PID" "$H2_OUT"
+    problem=$(failed_promote_problem "$H2_PID" "$H2_OUT" "$EIO")
+    [[ -z "$problem" ]] && problem=$(main_log_problem "$H2_PID" "$offset" \
+        'rw_lease_acquire: acquired RW lease host_id=2 ' \
+        'remount cant reclaim orphans: err -5, restoring RO mount')
+    if [[ -n "$problem" ]]; then
+        fail "TC-G10: H2 promotion with orphan reclaim failing: $problem"
+    else
+        pass "TC-G10: H2 promotion refused (errno $EIO), RO mount kept"
+
+        assert_sector_zeroed "TC-G10b: H2 gave its lease back" 2
+
+        if start_rw_holder 3; then
+            stop_holder
+            pass "TC-G10c: host 3 mounted RW while H2 lives on"
+        else
+            fail "TC-G10c: host 3 could not mount RW while H2 lives on"
+        fi
+
+        recheck_and_wait "$H2_PID" "$H2_OUT"
+        problem=$(recheck_problem "$H2_PID" "$H2_OUT")
+        if [[ -n "$problem" ]]; then
+            fail "TC-G10d: H2 after host 3 wrote: $problem"
+        else
+            pass "TC-G10d: H2 RO mount still usable"
+        fi
+    fi
+    stop_holder "$H2_PID"
+    rm -f "$H2_OUT"
 fi
 
 lease_test_summary
