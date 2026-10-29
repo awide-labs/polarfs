@@ -124,8 +124,8 @@ sudo /usr/local/polarstore/pfsd/bin/clean_pfsd.sh nvme1n1
 
 ##### 5. Verify PFS is running
 
-Perform common file operations to verify that PFS is running as expected. See
-the [PFS tool manual](docs/PFS_Tools-EN.md).
+Perform common file operations to verify that PFS is running as expected.
+Run `pfs help` to list the `pfs` tool commands.
 
 Example:
 
@@ -151,10 +151,6 @@ sudo ./uninstall.sh
 ## FUSE
 
 See [Readme-FUSE.md](Readme-FUSE.md) for mounting Awide PolarFS through FUSE.
-
-## Documentation
-
-- [PFS tool manual](docs/PFS_Tools-EN.md)
 
 ## Contributing
 
