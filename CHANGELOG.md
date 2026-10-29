@@ -17,6 +17,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   per-second rates are now rounded to the nearest integer; the "other"
   latency column now shows the TRIM+FLUSH latency; the queue depth is no
   longer divided by the sample window length (XCOM-191)
+- `pfs fscp -c` checksummed only the last 128 KB read of each 4 MB block
+  (the last `-n` group of fragments), so corruption elsewhere in the block
+  went undetected and the check reported a pass. The whole block is now
+  checksummed (XCOM-219)
 
 ## [3.1.0] - 2026-10-20
 

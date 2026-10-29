@@ -383,11 +383,13 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 		for (j = 0; j < fragperblk; j += nfrag) {
 			nfrag = MIN(fragperblk - j, cpinfo->i_nfrag);
 
-			err = frag_read(cpinfo->i_src_iochd, fragbda, src_iobuf,
+			err = frag_read(cpinfo->i_src_iochd, fragbda,
+			    (char *)src_iobuf + j * PFS_FRAG_SIZE,
 			    nfrag, holeoff);
 			if (err < 0)
 				goto out;
-			err = frag_read(cpinfo->i_dst_iochd, fragbda, dst_iobuf,
+			err = frag_read(cpinfo->i_dst_iochd, fragbda,
+			    (char *)dst_iobuf + j * PFS_FRAG_SIZE,
 			    nfrag, holeoff);
 			if (err < 0)
 				goto out;
