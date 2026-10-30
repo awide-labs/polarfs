@@ -363,7 +363,7 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 	void *src_iobuf;
 	void *dst_iobuf;
 	int32_t holeoff;
-	int32_t i, j, err, nfrag, fragperblk, crc_len;
+	int32_t i, j, err, nfrag, fragperblk;
 	pfs_bda_t fragbda;
 
 	/* sector-aligned for O_DIRECT, see chunk_copy() */
@@ -398,25 +398,33 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 		}
 
 		if (holeoff > 0) {
-			crc_len = (uint32_t)holeoff > PFS_BLOCK_SIZE ?
+			int cmp_len = (uint32_t)holeoff > PFS_BLOCK_SIZE ?
 			    PFS_BLOCK_SIZE : holeoff;
 
-			uint32_t src_crc = crc32c((uint32_t)~1, src_iobuf,
-			    crc_len);
-			uint32_t dst_crc = crc32c((uint32_t)~1, dst_iobuf,
-			    crc_len);
+			/*
+			 * Both blocks are already in memory: compare them
+			 * directly instead of via crc32c. memcmp is exact, no
+			 * slower, and lets us report the offset of the first
+			 * differing byte.
+			 */
+			if (memcmp(src_iobuf, dst_iobuf, cmp_len) != 0) {
+				int off = 0;
 
-			if (src_crc != dst_crc) {
-				pfs_etrace("crc check failed! src_crc=%u, dst_crc=%u,\
-				    oid=%ld, blkno=%ld, holeoff=%d",
-				    src_crc, dst_crc,oid, blkno, holeoff);
-				exit(-1);
+				while (off < cmp_len &&
+				    ((char *)src_iobuf)[off] ==
+				    ((char *)dst_iobuf)[off])
+					off++;
+
+				pfs_etrace("block mismatch! ckid=%d, oid=%ld, "
+				    "blkno=%ld, holeoff=%d, first_diff=%d\n",
+				    ckid, oid, blkno, holeoff, off);
+				err = -EIO;
+				goto out;
 			}
-			printf("crc check pass! crc=%u, ckid=%d, oid=%ld, blkno=%ld,\
-			    holeoff=%d\r", src_crc, ckid, oid, blkno, holeoff);
-			fflush(stdout);
 		}
 	}
+
+	pfs_itrace("chunk %d crc check passed\n", ckid);
 
 out:
 	pfs_mem_free(src_iobuf, M_IO_TMPBUF);

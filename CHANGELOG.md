@@ -78,6 +78,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   (the last `-n` group of fragments), so corruption elsewhere in the block
   went undetected and the check reported a pass. The whole block is now
   checksummed (XCOM-219)
+- `pfs fscp -c` called `exit(-1)` from an I/O worker thread on a block
+  mismatch, which aborted the copy with status 255 without closing the
+  source and destination devices or releasing the destination paxos lock;
+  it also stopped at the first bad block and interleaved a per-block
+  "crc check pass!" line into the progress output. The check now compares
+  the two in-memory blocks with `memcmp` instead of crc32c, reports the
+  offset of the first differing byte, and returns an error so the caller
+  fails the copy the same way as any other I/O error (XCOM-222)
 
 ## [3.1.0] - 2026-10-20
 
