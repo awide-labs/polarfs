@@ -15,8 +15,14 @@ cleanup() {
     echo ""
     echo "=== CLEANUP (exit code: $exit_code) ==="
 
-    # Preserve PFSD logs
-    cp /var/log/pfsd-${TEST_LOOP_DEVICE_NAME}/pfsd.log /var/log/pfsd-$TEST_LOOP_DEVICE_NAME.log
+    # Preserve PFSD logs (the daemon may not have started when a test
+    # fails early, in which case there is no pfsd.log to copy).
+    if [[ -f "/var/log/pfsd-${TEST_LOOP_DEVICE_NAME}/pfsd.log" ]]; then
+        cp "/var/log/pfsd-${TEST_LOOP_DEVICE_NAME}/pfsd.log" \
+            "/var/log/pfsd-$TEST_LOOP_DEVICE_NAME.log"
+    else
+        echo "  (no pfsd.log to preserve)"
+    fi
 
     # Stop daemon if it's running
     if [[ -n "${TEST_LOOP_DEVICE_NAME:-}" ]]; then
@@ -83,6 +89,15 @@ echo "Seeding file for pfsadm read test..."
 export PFSADM_READ_REF="/tmp/pfsadm_read_ref.bin"
 head -c 1024 /dev/urandom > "$PFSADM_READ_REF"
 ./bin/pfs -C disk write "/$TEST_LOOP_DEVICE_NAME/pfsadm_read_test.bin" < "$PFSADM_READ_REF"
+
+# fscp is an offline tool that mounts the source itself, so run its
+# verification regression test before pfsd owns the loop device. It
+# reuses this source image and creates its own target image.
+echo "Running fscp -c regression test..."
+if ! bash "$(dirname "$0")/fscp-test.sh" "$TEST_LOOP_DEVICE_NAME"; then
+    echo "ERROR: fscp -c regression test failed"
+    exit 1
+fi
 
 # 2. Start daemon
 echo "Starting PFSD..."

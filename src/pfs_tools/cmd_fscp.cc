@@ -99,6 +99,8 @@ typedef struct fscp_info {
 	int			i_nfrag;		/* pending fragment number */
 	int64_t			i_nblkcopy;
 	int64_t			i_nckcopy;
+	int64_t			i_nmismatch;	/* blocks failed verify (-c) */
+	int			i_ioerr;	/* first worker I/O error (<0) */
 
 	int			i_nworker;
 	pthread_t		i_workers[NWORKER_MAX];
@@ -356,14 +358,14 @@ chunk_copy(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 }
 
 static int
-chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
+chunk_verify(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 {
 	int64_t oid;
 	pfs_blkno_t blkno;
 	void *src_iobuf;
 	void *dst_iobuf;
 	int32_t holeoff;
-	int32_t i, j, err, nfrag, fragperblk, crc_len;
+	int32_t i, j, err, nfrag, fragperblk, nmismatch;
 	pfs_bda_t fragbda;
 
 	/* sector-aligned for O_DIRECT, see chunk_copy() */
@@ -373,6 +375,7 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 	PFS_ASSERT(err == 0);
 
 	err = 0;
+	nmismatch = 0;
 	fragperblk = PFS_BLOCK_SIZE / PFS_FRAG_SIZE;
 	for (i = oidvect_begin(pov); i < oidvect_end(pov); i++) {
 		oid = oidvect_get(pov, i);
@@ -398,25 +401,37 @@ chunk_crc_check(fscp_info_t *cpinfo, int ckid, oidvect_t *pov)
 		}
 
 		if (holeoff > 0) {
-			crc_len = (uint32_t)holeoff > PFS_BLOCK_SIZE ?
+			int cmp_len = (uint32_t)holeoff > PFS_BLOCK_SIZE ?
 			    PFS_BLOCK_SIZE : holeoff;
 
-			uint32_t src_crc = crc32c((uint32_t)~1, src_iobuf,
-			    crc_len);
-			uint32_t dst_crc = crc32c((uint32_t)~1, dst_iobuf,
-			    crc_len);
+			/*
+			 * Compare the source and destination blocks byte for
+			 * byte and report the offset of the first differing
+			 * byte on a mismatch. Count the mismatch and keep
+			 * going so one bad block doesn't hide the others.
+			 */
+			if (memcmp(src_iobuf, dst_iobuf, cmp_len) != 0) {
+				int off = 0;
 
-			if (src_crc != dst_crc) {
-				pfs_etrace("crc check failed! src_crc=%u, dst_crc=%u,\
-				    oid=%ld, blkno=%ld, holeoff=%d",
-				    src_crc, dst_crc,oid, blkno, holeoff);
-				exit(-1);
+				while (off < cmp_len &&
+				    ((char *)src_iobuf)[off] ==
+				    ((char *)dst_iobuf)[off])
+					off++;
+
+				pfs_etrace("block mismatch! ckid=%d, oid=%ld, "
+				    "blkno=%ld, holeoff=%d, first_diff=%d\n",
+				    ckid, oid, blkno, holeoff, off);
+				nmismatch++;
+				__sync_add_and_fetch(&cpinfo->i_nmismatch, 1);
 			}
-			printf("crc check pass! crc=%u, ckid=%d, oid=%ld, blkno=%ld,\
-			    holeoff=%d\r", src_crc, ckid, oid, blkno, holeoff);
-			fflush(stdout);
 		}
 	}
+
+	if (nmismatch > 0)
+		pfs_itrace("chunk %d verify: %d block(s) mismatch\n",
+		    ckid, nmismatch);
+	else
+		pfs_itrace("chunk %d verified\n", ckid);
 
 out:
 	pfs_mem_free(src_iobuf, M_IO_TMPBUF);
@@ -471,15 +486,13 @@ ioworker_main(void *arg)
 		if (err < 0) {
 			pfs_etrace("copy chunk %d failed, err=%d\n",
 			    task->t_ckid, err);
-			exit(EIO);
-		}
-
-		if (cpinfo->i_crc_check) {
-			err = chunk_crc_check(cpinfo, task->t_ckid, task->t_ov);
+			__sync_bool_compare_and_swap(&cpinfo->i_ioerr, 0, err);
+		} else if (cpinfo->i_crc_check) {
+			err = chunk_verify(cpinfo, task->t_ckid, task->t_ov);
 			if (err < 0) {
-				pfs_etrace("chunk crc check %d failed, err=%d\n",
+				pfs_etrace("verify chunk %d failed, err=%d\n",
 				    task->t_ckid, err);
-				exit(EIO);
+				__sync_bool_compare_and_swap(&cpinfo->i_ioerr, 0, err);
 			}
 		}
 
@@ -560,6 +573,7 @@ fscpinfo_init(fscp_info_t *cpinfo, const char *src, const char *dst,
 	cpinfo->i_dst_local_fd = -1;
 	cpinfo->i_nblkcopy = 0;
 	cpinfo->i_nckcopy = 0;
+	cpinfo->i_ioerr = 0;
 	cpinfo->i_nfrag = co_fscp->nfrag;
 	cpinfo->i_crc_check = co_fscp->crc_check;
 
@@ -779,9 +793,42 @@ fscp(fscp_info_t *cpinfo)
 	printf("[2] send %d chunk copy tasks, %ld used blks\n", nov, nblk);
 
 	stop_all_workers(cpinfo);
+
+	/*
+	 * A worker I/O error also makes the copy unreliable: fail here,
+	 * after all workers have finished and been joined, so the cleanup in
+	 * `out:` closes both devices and releases the paxos lock. Report it
+	 * on the terminal too, since pfs_trace_redirect() has moved stderr
+	 * into the destination log by the time the workers run.
+	 */
+	if (cpinfo->i_ioerr != 0) {
+		pfs_etrace("fscp failed: I/O error %d while copying\n",
+		    -cpinfo->i_ioerr);
+		printf("fscp failed: I/O error %d while copying\n",
+		    -cpinfo->i_ioerr);
+		err = cpinfo->i_ioerr;
+		goto out;
+	}
+
 	PFS_ASSERT(cpinfo->i_nblkcopy == nblk);
 	free(ov_array);
 	ov_array = NULL;
+
+	/*
+	 * If -c found any differing block, the copy is not reliable: fail
+	 * here, after all workers have finished and been joined, so the
+	 * cleanup in `out:` closes the devices and releases the paxos lock.
+	 * Do not update the paxos leader record of a bad copy. Report it on
+	 * the terminal too, since stderr is now the destination log.
+	 */
+	if (cpinfo->i_nmismatch > 0) {
+		pfs_etrace("fscp failed: %ld block(s) mismatch between "
+		    "source and destination\n", cpinfo->i_nmismatch);
+		printf("fscp failed: %ld block(s) mismatch between "
+		    "source and destination\n", cpinfo->i_nmismatch);
+		err = -EIO;
+		goto out;
+	}
 
 	err = paxos_leader_reset(cpinfo->i_dst_iochd, cpinfo->i_dst_pbd);
 	if (err < 0) {
@@ -838,6 +885,8 @@ cmd_fscp(int argc, char *argv[], cmd_opts_t *co)
 		return 0;
 	} else {
 		printf("pfs fscp failed!\n");
+		if (err < 0)
+			errno = -err;
 		return -1;
 	}
 }

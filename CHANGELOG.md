@@ -8,6 +8,19 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### fixed
+
+- `pfs fscp -c` called `exit(-1)` from an I/O worker thread on a block
+  mismatch, which aborted the copy with status 255 without closing the
+  source and destination devices or releasing the destination paxos lock;
+  it also stopped at the first bad block and interleaved a per-block
+  "crc check pass!" line into the progress output. The check now compares
+  the two in-memory blocks with `memcmp` instead of crc32c, reports the
+  offset of the first differing byte, and counts every mismatch. After all
+  workers finish, a copy with any mismatch fails with `EIO` and runs the
+  normal cleanup (closing both devices and releasing the paxos lock)
+  instead of killing the process mid-copy (XCOM-222)
+
 ## [3.2.0] - 2026-10-29
 
 ### Added
