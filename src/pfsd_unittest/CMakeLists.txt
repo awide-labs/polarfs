@@ -76,6 +76,24 @@ target_link_libraries(pfsd_proto_test
     gtest
 )
 
+add_executable(pfs_event_loop_test
+    pfs_event_loop_test.cc
+    ${PROJECT_SOURCE_DIR}/src/ipc/pfs_event_loop.cc
+)
+
+target_link_libraries(pfs_event_loop_test
+    gtest
+    pthread
+)
+
+include(CheckLinkerFlag)
+check_linker_flag(CXX -fsanitize=thread PFS_HAVE_TSAN)
+# gcc rejects TSan together with the ASan from ENABLE_SANITIZERS.
+if(PFS_HAVE_TSAN AND NOT ENABLE_SANITIZERS)
+  target_compile_options(pfs_event_loop_test PRIVATE -fsanitize=thread)
+  target_link_options(pfs_event_loop_test PRIVATE -fsanitize=thread)
+endif()
+
 add_executable(pfsd_cachetest
     dcache_test_rw_ro_sync.cc
 )

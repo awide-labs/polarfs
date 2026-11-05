@@ -8,6 +8,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a rare crash of PolarFS clients, typically during mount, reported
+  as "stack smashing detected": a race in the pfsd client's request
+  hand-off could write into memory the caller had already released
+  (XCOM-223)
+
 ## [3.2.0] - 2026-10-29
 
 ### Added
