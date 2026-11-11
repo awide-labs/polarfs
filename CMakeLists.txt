@@ -20,6 +20,7 @@ set(CMAKE_BUILD_TYPE "Release")
 #set(CMAKE_BUILD_TYPE "Debug")
 
 include(${CMAKE_SOURCE_DIR}/cmake/version.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/compiler_flags.cmake)
 
 set(COMMON_FLAGS
   -fno-strict-aliasing
@@ -63,6 +64,11 @@ set(COMMON_FLAGS ${COMMON_FLAGS}  -DPFS_DISK_IO_ONLY)
 option(ENABLE_SANITIZERS "Enable sanitizers (address + UB)" OFF)
 
 if(ENABLE_SANITIZERS)
+    pfs_check_compiler_and_linker_flag(C -fsanitize=address,undefined PFS_HAVE_ASAN_UBSAN_C)
+    pfs_check_compiler_and_linker_flag(CXX -fsanitize=address,undefined PFS_HAVE_ASAN_UBSAN_CXX)
+    if(NOT PFS_HAVE_ASAN_UBSAN_C OR NOT PFS_HAVE_ASAN_UBSAN_CXX)
+        message(FATAL_ERROR "ASan/UBSan are not supported by both C and C++ compilers")
+    endif()
     set(COMMON_FLAGS "${COMMON_FLAGS}" -fsanitize=address,undefined)
 endif()
 

@@ -47,8 +47,10 @@ public:
   // Run fn on the loop thread. If called from the loop thread, runs inline.
   // Thread-safe.
   void runInLoop(std::function<void()> fn);
-  // Same, but blocks until fn() returns. Must NOT be called from the loop
-  // thread (would deadlock); inline-runs in that case as a courtesy.
+  // Same, but blocks until fn() returns and rethrows any exception fn()
+  // throws. fn itself is destroyed on the loop thread, possibly after this
+  // returns. Must NOT be called from the loop thread (would deadlock);
+  // inline-runs in that case as a courtesy.
   void runInLoopAndWait(std::function<void()> fn);
   // Enqueue fn to run at the top of a future loop iteration. Unlike
   // runInLoop, NEVER runs inline -- even on the loop thread -- so it is safe

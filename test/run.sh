@@ -8,6 +8,7 @@ export TEST_LOOP_DEVICE_NAME="${TEST_LOOP_DEVICE_NAME:-loop100}"
 export TEST_IMAGE_SIZE_GB="${TEST_IMAGE_SIZE_GB:-30}"
 
 export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
+export TSAN_OPTIONS="halt_on_error=1"
 
 # Cleanup function to ensure daemon is stopped and resources are cleaned up even on failure
 cleanup() {
@@ -144,6 +145,12 @@ fi
 echo "Running pfsd_proto_test..."
 if ! ./bin/pfsd_proto_test; then
     echo "ERROR: pfsd_proto_test failed"
+    TEST_FAILED=1
+fi
+
+echo "Running pfs_event_loop_test..."
+if ! ./bin/pfs_event_loop_test; then
+    echo "ERROR: pfs_event_loop_test failed"
     TEST_FAILED=1
 fi
 

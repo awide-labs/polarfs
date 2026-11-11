@@ -7,6 +7,7 @@ RUN microdnf install -y dnf && \
     dnf install -y --enablerepo=devel --setopt=install_weak_deps=False \
         gcc \
         gcc-c++ \
+        libtsan \
         cmake \
         make \
         git \
