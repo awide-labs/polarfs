@@ -10,6 +10,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fixed a rare crash of PolarFS clients, typically during mount, reported
+  as "stack smashing detected" (XCOM-223)
 - For some operations, such as read, truncate, lseek, mountstat, unlink,
   stat, statistics were calculated incorrectly. This has been fixed (XCOM-190)
 

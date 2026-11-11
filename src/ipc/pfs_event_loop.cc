@@ -1,7 +1,8 @@
 #include "pfs_event_loop.h"
 
 #include <cerrno>
-#include <condition_variable>
+#include <exception>
+#include <future>
 #include <stdexcept>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -181,19 +182,18 @@ void EventLoop::runInLoopAndWait(std::function<void()> fn) {
     fn();
     return;
   }
-  std::mutex mu;
-  std::condition_variable cv;
-  bool done = false;
-  runInLoop([&] {
-    fn();
-    {
-      std::lock_guard lk(mu);
-      done = true;
+  auto done = std::make_shared<std::promise<void>>();
+  std::future<void> result = done->get_future();
+  runInLoop([fn = std::move(fn), done] {
+    try {
+      fn();
+      done->set_value();
+    } catch (...) {
+      done->set_exception(std::current_exception());
     }
-    cv.notify_one();
   });
-  std::unique_lock lk(mu);
-  cv.wait(lk, [&] { return done; });
+  // Rethrows an exception thrown by fn.
+  result.get();
 }
 
 bool EventLoop::inLoopThread() const noexcept {
