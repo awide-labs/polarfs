@@ -15,6 +15,20 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - For some operations, such as read, truncate, lseek, mountstat, unlink,
   stat, statistics were calculated incorrectly. This has been fixed (XCOM-190)
 
+### Added
+
+- `pfs fscp` adds a `--verify` option (short `-c`): after copying each
+  chunk it reads the data back and compares source and destination byte
+  for byte, and the copy fails if any block differs. The former
+  `--crc_check` spelling is kept as a deprecated alias (XCOM-222)
+
+### fixed
+- `pfs fscp -c` does not stop at the first block that is different in
+  the source and the destination. The command now completes the copy
+  and shows the number of different blocks. Then it stops with an
+  error. The log file /var/log/pfs-<destination>.log contains the
+  data for each different block (XCOM-222)
+
 ## [3.2.0] - 2026-10-29
 
 ### Added
