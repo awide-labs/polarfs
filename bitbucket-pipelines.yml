@@ -75,7 +75,7 @@ definitions:
           - .ci/check_changelog.sh origin/${BITBUCKET_PR_DESTINATION_BRANCH}
 
     - step: &check-release-tag-version
-        name: Check release tag matches POLARFS_VERSION
+        name: Check release tag matches POLAR_VERSION
         image: atlassian/default-image:3
         size: 1x
         script:
