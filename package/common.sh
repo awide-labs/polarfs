@@ -16,8 +16,8 @@ build_and_install() {
 }
 
 get_version() {
-    # shellcheck source=../POLARFS_VERSION
-    source "$SRC_ROOT"/POLARFS_VERSION
+    # shellcheck source=../POLAR_VERSION
+    source "$SRC_ROOT"/POLAR_VERSION
     echo "$VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH${VERSION_EXTRA:-}"
 }
 

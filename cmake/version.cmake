@@ -35,9 +35,9 @@ function(parse_version_file version_file)
     endif()
 endfunction()
 
-# Named POLARFS_VERSION (not VERSION) so -I${CMAKE_SOURCE_DIR} does not shadow
+# Named POLAR_VERSION (not VERSION) so -I${CMAKE_SOURCE_DIR} does not shadow
 # the C++20 standard header <version> (e.g. Docker Desktop bind mounts + Folly).
-parse_version_file("${CMAKE_SOURCE_DIR}/POLARFS_VERSION")
+parse_version_file("${CMAKE_SOURCE_DIR}/POLAR_VERSION")
 
 foreach(var IN ITEMS VERSION_MAJOR VERSION_MINOR VERSION_PATCH)
     if(NOT DEFINED ${var})

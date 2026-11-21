@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify that a pushed release tag matches POLARFS_VERSION at the same commit.
+# Verify that a pushed release tag matches POLAR_VERSION at the same commit.
 # Used by GitHub Actions (GITHUB_REF_NAME) and Bitbucket Pipelines (BITBUCKET_TAG).
 
 set -euo pipefail
@@ -18,13 +18,13 @@ if [[ -z "${TAG}" ]]; then
   exit 1
 fi
 
-if [[ ! -f POLARFS_VERSION ]]; then
-  echo "Error: POLARFS_VERSION not found at repo root" >&2
+if [[ ! -f POLAR_VERSION ]]; then
+  echo "Error: POLAR_VERSION not found at repo root" >&2
   exit 1
 fi
 
-# shellcheck source=../POLARFS_VERSION
-source "${ROOT}/POLARFS_VERSION"
+# shellcheck source=../POLAR_VERSION
+source "${ROOT}/POLAR_VERSION"
 FILE_VERSION="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}${VERSION_EXTRA:-}"
 
 if [[ "${TAG}" == v* ]]; then
@@ -35,8 +35,8 @@ fi
 
 if [[ "${TAG_VERSION}" != "${FILE_VERSION}" ]]; then
   echo "Error: tag '${TAG}' (expected version '${TAG_VERSION}') does not match" >&2
-  echo "POLARFS_VERSION (file reports '${FILE_VERSION}')." >&2
+  echo "POLAR_VERSION (file reports '${FILE_VERSION}')." >&2
   exit 1
 fi
 
-echo "OK: tag '${TAG}' matches POLARFS_VERSION (${FILE_VERSION})"
+echo "OK: tag '${TAG}' matches POLAR_VERSION (${FILE_VERSION})"
